@@ -20,10 +20,12 @@ if __name__ == "__main__":
     print("\n--- PHASE 1: Training Base Models & Saving OOF Predictions ---")
     run_script("src/train.py")
     run_script("src/train_seq.py")
+    run_script("src/train_cat.py")
     
     print("\n--- PHASE 2: Generating Base Model Test Predictions ---")
     run_script("src/predict.py")
     run_script("src/predict_seq.py")
+    run_script("src/predict_cat.py")
     
     print("\n--- PHASE 3: Training Meta-Model & Generating Final Submission ---")
     run_script("src/stacking.py")

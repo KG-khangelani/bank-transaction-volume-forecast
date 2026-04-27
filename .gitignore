@@ -3,3 +3,4 @@ data/*
 submission*
 submission_pytorch.csv
 submission_stack.csv
+.env

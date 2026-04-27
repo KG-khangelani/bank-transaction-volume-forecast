@@ -1,5 +1,24 @@
 import torch
 import torch.nn as nn
+import math
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=600):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        if d_model % 2 != 0:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))
+
+    def forward(self, x):
+        # x shape: [batch_size, seq_len, d_model]
+        x = x + self.pe[:, :x.size(1), :]
+        return x
 
 class TransactionSequenceModel(nn.Module):
     def __init__(self, vocab_sizes, num_static_features, hidden_dim=128, num_layers=2):
@@ -13,14 +32,18 @@ class TransactionSequenceModel(nn.Module):
         # Sequence input dim = num_feats (2: Amount, Balance) + emb_dims (16+16+4) = 38
         seq_input_dim = 2 + 16 + 16 + 4
         
-        # LSTM layer to process temporal transaction data
-        self.lstm = nn.LSTM(
-            input_size=seq_input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=0.2 if num_layers > 1 else 0
+        # Projection to hidden_dim for transformer
+        self.input_proj = nn.Linear(seq_input_dim, hidden_dim)
+        self.pos_encoder = PositionalEncoding(hidden_dim)
+        
+        # Transformer Encoder layer to process temporal transaction data using Attention
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, 
+            nhead=4, 
+            batch_first=True, 
+            dropout=0.2
         )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
         # Static features feed-forward network (Demographics, Financial Aggregates)
         self.static_net = nn.Sequential(
@@ -53,12 +76,14 @@ class TransactionSequenceModel(nn.Module):
         # Concatenate sequence features together
         seq_x = torch.cat([seq_num_feats, t_emb, b_emb, d_emb], dim=-1)
         
-        # Process sequence through LSTM
-        # Using output, (h_n, c_n)
-        _, (h_n, _) = self.lstm(seq_x)
+        # Transformer Processing
+        seq_x = self.input_proj(seq_x)
+        seq_x = self.pos_encoder(seq_x)
         
-        # Take the hidden state of the last layer
-        seq_repr = h_n[-1] # Shape: [batch_size, hidden_dim]
+        trans_out = self.transformer(seq_x)
+        
+        # Global Average Pooling over the sequence length
+        seq_repr = trans_out.mean(dim=1) # Shape: [batch_size, hidden_dim]
         
         # Process static tabular features
         static_repr = self.static_net(static_feats)

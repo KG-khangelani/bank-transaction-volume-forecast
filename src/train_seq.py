@@ -97,6 +97,7 @@ def train_pytorch(epochs=150, batch_size=256):
         model = TransactionSequenceModel(vocab_sizes, num_static_features).to(device)
         criterion = nn.MSELoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+        scaler = torch.cuda.amp.GradScaler()
         
         best_val_loss = float('inf')
         
@@ -107,10 +108,14 @@ def train_pytorch(epochs=150, batch_size=256):
                 num_feats, cat_feats, static, y = num_feats.to(device), cat_feats.to(device), static.to(device), y.to(device)
                 
                 optimizer.zero_grad()
-                preds = model(num_feats, cat_feats, static)
-                loss = criterion(preds, y)
-                loss.backward()
-                optimizer.step()
+                with torch.cuda.amp.autocast():
+                    preds = model(num_feats, cat_feats, static)
+                    loss = criterion(preds, y)
+                
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                
                 train_loss += loss.item()
                 
             model.eval()
@@ -119,10 +124,11 @@ def train_pytorch(epochs=150, batch_size=256):
             with torch.no_grad():
                 for num_feats, cat_feats, static, y in val_loader:
                     num_feats, cat_feats, static, y = num_feats.to(device), cat_feats.to(device), static.to(device), y.to(device)
-                    preds = model(num_feats, cat_feats, static)
-                    loss = criterion(preds, y)
+                    with torch.cuda.amp.autocast():
+                        preds = model(num_feats, cat_feats, static)
+                        loss = criterion(preds, y)
                     val_loss += loss.item()
-                    fold_preds.extend(preds.cpu().numpy())
+                    fold_preds.extend(preds.float().cpu().numpy())
             
             val_rmse = np.sqrt(val_loss / len(val_loader))
             # print(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}")
