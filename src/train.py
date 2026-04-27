@@ -77,6 +77,14 @@ def train_model(data_dir='data'):
     overall_rmse = np.sqrt(mean_squared_error(y, oof_preds))
     print(f"Overall OOF RMSLE: {overall_rmse:.4f}")
 
+    # Save OOF predictions for stacking
+    oof_df = pd.DataFrame({
+        'UniqueID': df['UniqueID'],
+        'pred_lgbm': oof_preds
+    })
+    oof_df.to_csv(os.path.join(data_dir, 'processed', 'oof_lgbm.csv'), index=False)
+    print("OOF predictions saved to data/processed/oof_lgbm.csv")
+
     os.makedirs('models', exist_ok=True)
     for i, m in enumerate(models):
         m.save_model(f'models/lgb_fold{i}.txt')

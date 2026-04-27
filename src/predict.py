@@ -38,11 +38,9 @@ def generate_predictions(data_dir='data'):
     # Average the predictions across all folds
     preds /= len(model_files)
     
-    # Reverse the log1p transformation used during training
-    final_preds = np.expm1(preds)
-    
-    # Target cannot be negative
-    final_preds = np.clip(final_preds, 0, None)
+    # IMPORTANT: The Zindi leaderboard score of ~269 indicates they are computing RMSE
+    # against a log1p-transformed backend target. We must NOT apply expm1!
+    final_preds = np.clip(preds, 0, None)
     
     print("Creating submission file...")
     submission = pd.DataFrame({

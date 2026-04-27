@@ -75,7 +75,7 @@ def load_data(data_dir='data/inputs'):
     
     return uids, seq_data, static_data, targets, vocab_sizes, len(feat_cols)
 
-def train_pytorch(epochs=25, batch_size=256):
+def train_pytorch(epochs=150, batch_size=256):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -137,6 +137,13 @@ def train_pytorch(epochs=25, batch_size=256):
         
     overall_rmse = np.sqrt(np.mean((oof_preds - targets)**2))
     print(f"Overall PyTorch OOF RMSLE: {overall_rmse:.4f}")
+
+    oof_df = pd.DataFrame({
+        'UniqueID': uids,
+        'pred_pytorch': oof_preds
+    })
+    oof_df.to_csv('data/processed/oof_pytorch.csv', index=False)
+    print("OOF predictions saved to data/processed/oof_pytorch.csv")
 
 if __name__ == "__main__":
     train_pytorch()
