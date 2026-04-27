@@ -1,5 +1,3 @@
-
-
 services:
   jupyter:
     build: .
@@ -11,3 +9,10 @@ services:
       - JUPYTER_ENABLE_LAB=yes
       # The token is set to empty for local convenience; change this in a production setting
       - JUPYTER_TOKEN=
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
