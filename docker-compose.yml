@@ -1,0 +1,13 @@
+
+
+services:
+  jupyter:
+    build: .
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/app
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      # The token is set to empty for local convenience; change this in a production setting
+      - JUPYTER_TOKEN=
