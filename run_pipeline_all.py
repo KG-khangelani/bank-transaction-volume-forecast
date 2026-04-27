@@ -18,6 +18,7 @@ if __name__ == "__main__":
     # run_script("src/features_seq.py") # Sequence features haven't changed, skip to save time
     
     print("\n--- PHASE 1: Training Base Models & Saving OOF Predictions ---")
+    run_script("src/features_seq.py")
     run_script("src/train.py")
     run_script("src/train_seq.py")
     run_script("src/train_cat.py")

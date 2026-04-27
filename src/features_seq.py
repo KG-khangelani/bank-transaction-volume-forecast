@@ -3,7 +3,7 @@ import numpy as np
 import os
 import joblib
 
-def create_sequence_features(data_dir='data/inputs', max_seq_len=300):
+def create_sequence_features(data_dir='data/inputs', max_seq_len=100):
     print("Loading datasets with Polars for sequence extraction...")
     
     transactions = pl.scan_parquet(os.path.join(data_dir, 'transactions_features.parquet'))

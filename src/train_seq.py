@@ -24,11 +24,16 @@ class TransactionDataset(Dataset):
         uid = self.uids[idx]
         
         seq = self.seq_data.get(uid, None)
+        # Determine sequence length from the first available sequence in seq_data
+        seq_len = len(next(iter(self.seq_data.values()))['num_feats']) if self.seq_data else 100
+        
         if seq is None:
-            num_feats = torch.zeros((300, 2), dtype=torch.float32)
-            cat_feats = torch.zeros((300, 3), dtype=torch.long)
+            num_feats = torch.zeros((seq_len, 2), dtype=torch.float32)
+            cat_feats = torch.zeros((seq_len, 3), dtype=torch.long)
         else:
-            num_feats = torch.tensor(seq['num_feats'], dtype=torch.float32)
+            num_feats_raw = torch.tensor(seq['num_feats'], dtype=torch.float32)
+            # Log1p scale large banking numbers to prevent float16 overflow in AMP!
+            num_feats = torch.sign(num_feats_raw) * torch.log1p(torch.abs(num_feats_raw))
             cat_feats = torch.tensor(seq['cat_feats'], dtype=torch.long)
             
         static = torch.tensor(self.static_data[idx], dtype=torch.float32)
@@ -91,8 +96,8 @@ def train_pytorch(epochs=150, batch_size=256):
         train_dataset = TransactionDataset(uids[train_idx], seq_data, static_data[train_idx], targets[train_idx])
         val_dataset = TransactionDataset(uids[val_idx], seq_data, static_data[val_idx], targets[val_idx])
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
         
         model = TransactionSequenceModel(vocab_sizes, num_static_features).to(device)
         criterion = nn.MSELoss()
@@ -131,7 +136,7 @@ def train_pytorch(epochs=150, batch_size=256):
                     fold_preds.extend(preds.float().cpu().numpy())
             
             val_rmse = np.sqrt(val_loss / len(val_loader))
-            # print(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}")
+            print(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}")
             
             if val_rmse < best_val_loss:
                 best_val_loss = val_rmse
