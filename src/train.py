@@ -32,7 +32,7 @@ def train_model(data_dir='data'):
     
     # Target transformation: log1p to inherently optimize for RMSLE
     # because RMSE on log1p(y) == RMSLE on y
-    y = np.log1p(df['next_3m_txn_count'])
+    y = df['next_3m_txn_count']
 
     print(f"Training LightGBM model on {len(X)} rows and {len(feature_cols)} features...")
 
@@ -48,8 +48,8 @@ def train_model(data_dir='data'):
         val_data = lgb.Dataset(X_val, label=y_val, categorical_feature=[c for c in cat_cols if c in X.columns])
 
         params = {
-            'objective': 'regression',
-            'metric': 'rmse',
+            'objective': 'poisson',
+            'metric': 'poisson',
             'learning_rate': 0.05,
             'num_leaves': 31,
             'max_depth': 6,
@@ -71,16 +71,16 @@ def train_model(data_dir='data'):
         models.append(model)
         oof_preds[val_idx] = model.predict(X_val)
         
-        fold_rmse = np.sqrt(mean_squared_error(y_val, oof_preds[val_idx]))
+        fold_rmse = np.sqrt(mean_squared_error(np.log1p(y_val), np.log1p(np.clip(oof_preds[val_idx], 0, None))))
         print(f"Fold {fold+1} Validation RMSLE: {fold_rmse:.4f}")
 
-    overall_rmse = np.sqrt(mean_squared_error(y, oof_preds))
+    overall_rmse = np.sqrt(mean_squared_error(np.log1p(y), np.log1p(np.clip(oof_preds, 0, None))))
     print(f"Overall OOF RMSLE: {overall_rmse:.4f}")
 
     # Save OOF predictions for stacking
     oof_df = pd.DataFrame({
         'UniqueID': df['UniqueID'],
-        'pred_lgbm': oof_preds
+        'pred_lgbm': np.log1p(np.clip(oof_preds, 0, None))
     })
     oof_df.to_csv(os.path.join(data_dir, 'processed', 'oof_lgbm.csv'), index=False)
     print("OOF predictions saved to data/processed/oof_lgbm.csv")

@@ -38,9 +38,8 @@ def generate_predictions(data_dir='data'):
     # Average the predictions across all folds
     preds /= len(model_files)
     
-    # IMPORTANT: The Zindi leaderboard score of ~269 indicates they are computing RMSE
-    # against a log1p-transformed backend target. We must NOT apply expm1!
-    final_preds = np.clip(preds, 0, None)
+    # Convert Poisson expected counts back to log1p space for Stacking and Zindi
+    final_preds = np.log1p(np.clip(preds, 0, None))
     
     print("Creating submission file...")
     submission = pd.DataFrame({

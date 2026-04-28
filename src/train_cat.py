@@ -31,7 +31,7 @@ def train_catboost(data_dir='data'):
     df[feature_cols] = df[feature_cols].fillna(0)
 
     X = df[feature_cols]
-    y = np.log1p(df['next_3m_txn_count'])
+    y = df['next_3m_txn_count']
 
     print(f"Training CatBoost model on {len(X)} rows and {len(feature_cols)} features...")
 
@@ -52,8 +52,8 @@ def train_catboost(data_dir='data'):
             iterations=1500,
             learning_rate=0.05,
             depth=6,
-            loss_function='RMSE',
-            eval_metric='RMSE',
+            loss_function='Poisson',
+            eval_metric='Poisson',
             random_seed=42 + fold,
             task_type='GPU', # GPU acceleration
             verbose=200,
@@ -65,16 +65,16 @@ def train_catboost(data_dir='data'):
         models.append(model)
         oof_preds[val_idx] = model.predict(X_val)
         
-        fold_rmse = np.sqrt(mean_squared_error(y_val, oof_preds[val_idx]))
+        fold_rmse = np.sqrt(mean_squared_error(np.log1p(y_val), np.log1p(np.clip(oof_preds[val_idx], 0, None))))
         print(f"Fold {fold+1} Validation RMSLE: {fold_rmse:.4f}")
 
-    overall_rmse = np.sqrt(mean_squared_error(y, oof_preds))
+    overall_rmse = np.sqrt(mean_squared_error(np.log1p(y), np.log1p(np.clip(oof_preds, 0, None))))
     print(f"Overall CatBoost OOF RMSLE: {overall_rmse:.4f}")
 
     # Save OOF predictions
     oof_df = pd.DataFrame({
         'UniqueID': df['UniqueID'],
-        'pred_catboost': oof_preds
+        'pred_catboost': np.log1p(np.clip(oof_preds, 0, None))
     })
     oof_df.to_csv(os.path.join(data_dir, 'processed', 'oof_catboost.csv'), index=False)
     print("OOF predictions saved to data/processed/oof_catboost.csv")

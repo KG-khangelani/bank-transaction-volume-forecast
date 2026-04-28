@@ -39,8 +39,8 @@ def predict_catboost(data_dir='data'):
         
     preds /= len(model_files)
     
-    # Zindi log1p space requirement
-    final_preds = np.clip(preds, 0, None)
+    # Convert Poisson expected counts back to log1p space for Stacking and Zindi
+    final_preds = np.log1p(np.clip(preds, 0, None))
     
     print("Creating submission file...")
     submission = pd.DataFrame({

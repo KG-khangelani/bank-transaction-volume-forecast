@@ -74,7 +74,7 @@ def load_data(data_dir='data/inputs'):
     
     uids = train_df['UniqueID'].values
     static_data = train_df[feat_cols].values
-    targets = np.log1p(train_df['next_3m_txn_count'].values)
+    targets = train_df['next_3m_txn_count'].values
     
     return uids, seq_data, static_data, targets, vocab_sizes, len(feat_cols)
 
@@ -98,7 +98,7 @@ def train_pytorch(epochs=150, batch_size=256):
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
         
         model = TransactionSequenceModel(vocab_sizes, num_static_features).to(device)
-        criterion = nn.MSELoss()
+        criterion = nn.PoissonNLLLoss(log_input=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
         scaler = torch.cuda.amp.GradScaler()
@@ -146,10 +146,11 @@ def train_pytorch(epochs=150, batch_size=256):
                         preds = model(num_feats, cat_feats, static)
                         loss = criterion(preds, y)
                     val_loss += loss.item()
-                    fold_preds.extend(preds.float().cpu().numpy())
+                    fold_preds.extend(torch.exp(preds).float().cpu().numpy())
             
-            val_rmse = np.sqrt(val_loss / len(val_loader))
-            print(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}")
+            fold_preds_np = np.clip(fold_preds, 0, None)
+            val_rmse = np.sqrt(np.mean((np.log1p(targets[val_idx]) - np.log1p(fold_preds_np))**2))
+            print(f"Epoch {epoch+1} | Train Loss (Poisson): {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}", flush=True)
             
             if val_rmse < best_val_loss:
                 best_val_loss = val_rmse
@@ -169,12 +170,12 @@ def train_pytorch(epochs=150, batch_size=256):
         print(f"Fold {fold+1} Best Val RMSLE: {best_val_loss:.4f}")
         oof_preds[val_idx] = best_preds
         
-    overall_rmse = np.sqrt(np.mean((oof_preds - targets)**2))
+    overall_rmse = np.sqrt(np.mean((np.log1p(oof_preds) - np.log1p(targets))**2))
     print(f"Overall PyTorch OOF RMSLE: {overall_rmse:.4f}")
 
     oof_df = pd.DataFrame({
         'UniqueID': uids,
-        'pred_pytorch': oof_preds
+        'pred_pytorch': np.log1p(np.clip(oof_preds, 0, None))
     })
     oof_df.to_csv('data/processed/oof_pytorch.csv', index=False)
     print("OOF predictions saved to data/processed/oof_pytorch.csv")

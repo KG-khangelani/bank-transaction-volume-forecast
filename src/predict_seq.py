@@ -62,16 +62,20 @@ def predict_pytorch(batch_size=256):
         with torch.no_grad():
             for num_feats, cat_feats, static in loader:
                 num_feats, cat_feats, static = num_feats.to(device), cat_feats.to(device), static.to(device)
+                
+                # GPU Vectorized Log1p Scaling (fixes missing scaling on inference!)
+                num_feats = torch.sign(num_feats) * torch.log1p(torch.abs(num_feats))
+                
                 out = model(num_feats, cat_feats, static)
-                fold_preds.extend(out.cpu().numpy())
+                # PyTorch outputs log(lambda), so we use torch.exp to get lambda (raw counts)
+                fold_preds.extend(torch.exp(out).cpu().numpy())
                 
         preds += np.array(fold_preds)
         
     preds /= num_folds
     
-    # IMPORTANT: The Zindi leaderboard score of ~269 indicates they are computing RMSE
-    # against a log1p-transformed backend target. We must NOT apply expm1!
-    final_preds = np.clip(preds, 0, None)
+    # Convert Poisson expected counts back to log1p space for Stacking and Zindi
+    final_preds = np.log1p(np.clip(preds, 0, None))
     
     submission = pd.DataFrame({
         'UniqueID': uids,
