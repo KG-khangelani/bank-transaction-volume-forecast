@@ -102,7 +102,7 @@ def train_pytorch(epochs=150, batch_size=256):
         model = TransactionSequenceModel(vocab_sizes, num_static_features).to(device)
         criterion = nn.MSELoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
         scaler = torch.cuda.amp.GradScaler()
         
         best_val_loss = float('inf')
