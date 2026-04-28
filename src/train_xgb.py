@@ -4,8 +4,11 @@ import xgboost as xgb
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
+import joblib
+from pipeline_utils import CAT_COLS, fit_category_maps, require_nvidia_gpu
 
 def train_xgboost(data_dir='data'):
+    require_nvidia_gpu()
     print("Loading data for XGBoost training...")
     train = pd.read_csv(os.path.join(data_dir, 'inputs', 'Train.csv'))
     features = pd.read_parquet(os.path.join(data_dir, 'processed', 'all_features.parquet'))
@@ -13,16 +16,8 @@ def train_xgboost(data_dir='data'):
     print("Merging train labels with engineered features...")
     df = train.merge(features, on='UniqueID', how='left')
 
-    # XGBoost handles categoricals best as label-encoded numerics
-    cat_cols = ['Gender', 'IncomeCategory', 'CustomerStatus', 'ClientType',
-                'MaritalStatus', 'OccupationCategory', 'IndustryCategory',
-                'CustomerBankingType', 'CustomerOnboardingChannel',
-                'ResidentialCityName', 'CountryCodeNationality',
-                'LowIncomeFlag', 'CertificationTypeDescription', 'ContactPreference']
-
-    for c in cat_cols:
-        if c in df.columns:
-            df[c] = df[c].astype('category').cat.codes
+    # Persist label maps so train/test categorical codes cannot drift.
+    category_maps = fit_category_maps(df, CAT_COLS)
 
     drop_cols = ['UniqueID', 'BirthDate', 'next_3m_txn_count']
     feature_cols = [c for c in df.columns if c not in drop_cols]
@@ -53,6 +48,11 @@ def train_xgboost(data_dir='data'):
     }
 
     os.makedirs('models', exist_ok=True)
+    os.makedirs(os.path.join(data_dir, 'processed'), exist_ok=True)
+    joblib.dump(
+        {'feature_cols': feature_cols, 'category_maps': category_maps},
+        os.path.join(data_dir, 'processed', 'xgb_preprocessor.joblib'),
+    )
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
         X_train, y_train = X[train_idx], y[train_idx]

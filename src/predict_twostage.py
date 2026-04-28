@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import os
+from pipeline_utils import CAT_COLS, save_log_predictions, write_count_submission
 
 def generate_predictions(data_dir='data'):
     print("Loading test data and features...")
@@ -11,13 +12,7 @@ def generate_predictions(data_dir='data'):
     print("Merging test with engineered features...")
     df = test.merge(features, on='UniqueID', how='left')
 
-    cat_cols = ['Gender', 'IncomeCategory', 'CustomerStatus', 'ClientType', 
-                'MaritalStatus', 'OccupationCategory', 'IndustryCategory', 
-                'CustomerBankingType', 'CustomerOnboardingChannel', 
-                'ResidentialCityName', 'CountryCodeNationality', 
-                'LowIncomeFlag', 'CertificationTypeDescription', 'ContactPreference']
-    
-    for c in cat_cols:
+    for c in CAT_COLS:
         if c in df.columns:
             df[c] = df[c].astype('category')
 
@@ -44,17 +39,14 @@ def generate_predictions(data_dir='data'):
         
     preds /= num_folds
     
-    # Final predictions already in log1p space
-    final_preds = np.clip(preds, 0, None)
-    
-    print("Creating submission file...")
-    submission = pd.DataFrame({
-        'UniqueID': test['UniqueID'],
-        'next_3m_txn_count': final_preds
-    })
-    
-    submission.to_csv('submission.csv', index=False)
-    print("Successfully generated submission.csv (Two-Stage)")
+    save_log_predictions(
+        test['UniqueID'],
+        preds,
+        'pred_twostage',
+        os.path.join(data_dir, 'processed', 'test_pred_twostage.csv'),
+    )
+    write_count_submission(test['UniqueID'], preds, 'submission_twostage.csv')
+    print("Successfully generated submission_twostage.csv")
 
 if __name__ == "__main__":
     generate_predictions()

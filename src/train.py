@@ -4,6 +4,7 @@ import lightgbm as lgb
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
+from pipeline_utils import CAT_COLS
 
 def train_model(data_dir='data'):
     print("Loading data for training...")
@@ -14,13 +15,7 @@ def train_model(data_dir='data'):
     df = train.merge(features, on='UniqueID', how='left')
 
     # Convert object columns to 'category' for LightGBM
-    cat_cols = ['Gender', 'IncomeCategory', 'CustomerStatus', 'ClientType', 
-                'MaritalStatus', 'OccupationCategory', 'IndustryCategory', 
-                'CustomerBankingType', 'CustomerOnboardingChannel', 
-                'ResidentialCityName', 'CountryCodeNationality', 
-                'LowIncomeFlag', 'CertificationTypeDescription', 'ContactPreference']
-    
-    for c in cat_cols:
+    for c in CAT_COLS:
         if c in df.columns:
             df[c] = df[c].astype('category')
 
@@ -44,8 +39,8 @@ def train_model(data_dir='data'):
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
         X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
 
-        train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=[c for c in cat_cols if c in X.columns])
-        val_data = lgb.Dataset(X_val, label=y_val, categorical_feature=[c for c in cat_cols if c in X.columns])
+        train_data = lgb.Dataset(X_train, label=y_train, categorical_feature=[c for c in CAT_COLS if c in X.columns])
+        val_data = lgb.Dataset(X_val, label=y_val, categorical_feature=[c for c in CAT_COLS if c in X.columns])
 
         params = {
             'objective': 'regression',

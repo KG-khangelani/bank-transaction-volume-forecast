@@ -2,6 +2,12 @@ import pandas as pd
 import numpy as np
 from catboost import CatBoostRegressor
 import os
+from pipeline_utils import (
+    CAT_COLS,
+    list_fold_models,
+    save_log_predictions,
+    write_count_submission,
+)
 
 def predict_catboost(data_dir='data'):
     print("Loading test data and features...")
@@ -11,13 +17,7 @@ def predict_catboost(data_dir='data'):
     print("Merging test with engineered features...")
     df = test.merge(features, on='UniqueID', how='left')
 
-    cat_cols = ['Gender', 'IncomeCategory', 'CustomerStatus', 'ClientType', 
-                'MaritalStatus', 'OccupationCategory', 'IndustryCategory', 
-                'CustomerBankingType', 'CustomerOnboardingChannel', 
-                'ResidentialCityName', 'CountryCodeNationality', 
-                'LowIncomeFlag', 'CertificationTypeDescription', 'ContactPreference']
-    
-    for c in cat_cols:
+    for c in CAT_COLS:
         if c in df.columns:
             df[c] = df[c].fillna('Unknown').astype(str)
 
@@ -29,7 +29,7 @@ def predict_catboost(data_dir='data'):
     X = df[feature_cols]
 
     print("Loading CatBoost models and making predictions...")
-    model_files = [f for f in os.listdir('models') if f.startswith('catboost_fold')]
+    model_files = list_fold_models('models', 'catboost_fold')
     
     preds = np.zeros(len(X))
     for mf in model_files:
@@ -39,16 +39,13 @@ def predict_catboost(data_dir='data'):
         
     preds /= len(model_files)
     
-    # Final predictions already in log1p space
-    final_preds = np.clip(preds, 0, None)
-    
-    print("Creating submission file...")
-    submission = pd.DataFrame({
-        'UniqueID': df['UniqueID'],
-        'next_3m_txn_count': final_preds
-    })
-    
-    submission.to_csv('submission_catboost.csv', index=False)
+    save_log_predictions(
+        df['UniqueID'],
+        preds,
+        'pred_catboost',
+        os.path.join(data_dir, 'processed', 'test_pred_catboost.csv'),
+    )
+    write_count_submission(df['UniqueID'], preds, 'submission_catboost.csv')
     print("Successfully generated submission_catboost.csv")
 
 if __name__ == "__main__":

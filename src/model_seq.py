@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import math
+from pipeline_utils import SEQUENCE_LENGTH
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=600):
@@ -29,7 +30,7 @@ class TransactionSequenceModel(nn.Module):
         
         # Projection to hidden_dim for transformer
         self.input_proj = nn.Linear(seq_input_dim, hidden_dim)
-        self.pos_encoder = PositionalEncoding(hidden_dim, max_len=34) # 34 months
+        self.pos_encoder = PositionalEncoding(hidden_dim, max_len=SEQUENCE_LENGTH)
         
         # Transformer Encoder layer to process temporal transaction data using Attention
         encoder_layer = nn.TransformerEncoderLayer(
@@ -57,10 +58,11 @@ class TransactionSequenceModel(nn.Module):
             nn.Linear(64, 1)
         )
         
-    def forward(self, seq_num_feats, static_feats):
+    def forward(self, seq_num_feats, static_feats, seq_mask=None):
         """
-        seq_num_feats: [batch_size, 34, 3]
+        seq_num_feats: [batch_size, 35, 3]
         static_feats:  [batch_size, num_static_features]
+        seq_mask:      [batch_size, 35] bool mask for observed months
         """
         # Transformer Processing
         seq_x = self.input_proj(seq_num_feats)
@@ -68,8 +70,12 @@ class TransactionSequenceModel(nn.Module):
         
         trans_out = self.transformer(seq_x)
         
-        # Global Average Pooling over the sequence length
-        seq_repr = trans_out.mean(dim=1) # Shape: [batch_size, hidden_dim]
+        if seq_mask is None:
+            seq_repr = trans_out.mean(dim=1)
+        else:
+            weights = seq_mask.to(trans_out.dtype).unsqueeze(-1)
+            denom = weights.sum(dim=1).clamp_min(1.0)
+            seq_repr = (trans_out * weights).sum(dim=1) / denom
         
         # Process static tabular features
         static_repr = self.static_net(static_feats)

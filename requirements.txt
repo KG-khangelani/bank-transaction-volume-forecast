@@ -11,3 +11,5 @@ lightgbm
 catboost
 polars
 tqdm
+joblib
+optuna

@@ -2,14 +2,15 @@ import polars as pl
 import numpy as np
 import os
 import joblib
+from pipeline_utils import SEQUENCE_LENGTH
 
-def create_sequence_features(data_dir='data/inputs', max_seq_len=34):
+def create_sequence_features(data_dir='data/inputs', max_seq_len=SEQUENCE_LENGTH):
     print("Loading datasets with Polars for sequence extraction...")
     
     transactions = pl.scan_parquet(os.path.join(data_dir, 'transactions_features.parquet'))
     
     print("Extracting Month Indices...")
-    # Add Year, Month, and a normalized MonthIdx (0 to 33)
+    # Add Year, Month, and a normalized MonthIdx (0 to 34)
     txns = transactions.with_columns([
         pl.col("TransactionDate").dt.year().alias("Year"),
         pl.col("TransactionDate").dt.month().alias("Month")
@@ -53,8 +54,9 @@ def create_sequence_features(data_dir='data/inputs', max_seq_len=34):
         sums = np.array(row["monthly_sum"])
         balances = np.array(row["monthly_balance"])
         
-        # Place them in the correct 0-33 slots explicitly
+        # Place them in the correct 0-34 slots explicitly
         num_feats = np.zeros((max_seq_len, 3), dtype=np.float32)
+        observed_mask = np.zeros(max_seq_len, dtype=bool)
         
         # Valid MonthIdx bounds
         valid_mask = (m_idx >= 0) & (m_idx < max_seq_len)
@@ -63,10 +65,12 @@ def create_sequence_features(data_dir='data/inputs', max_seq_len=34):
         num_feats[valid_idx, 0] = counts[valid_mask]
         num_feats[valid_idx, 1] = sums[valid_mask]
         num_feats[valid_idx, 2] = balances[valid_mask]
+        observed_mask[valid_idx] = True
         
         sequence_data[uid] = {
             "num_feats": num_feats,
-            "seq_len": len(valid_idx)
+            "seq_len": len(valid_idx),
+            "observed_mask": observed_mask
         }
 
     os.makedirs('data/processed', exist_ok=True)

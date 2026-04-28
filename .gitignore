@@ -4,3 +4,7 @@ submission*
 submission_pytorch.csv
 submission_stack.csv
 .env
+models/
+catboost_info/
+src/__pycache__/
+*.pyc

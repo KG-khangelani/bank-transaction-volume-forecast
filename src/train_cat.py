@@ -4,8 +4,10 @@ from catboost import CatBoostRegressor, Pool
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
+from pipeline_utils import CAT_COLS, require_nvidia_gpu
 
 def train_catboost(data_dir='data'):
+    require_nvidia_gpu()
     print("Loading data for CatBoost training...")
     train = pd.read_csv(os.path.join(data_dir, 'inputs', 'Train.csv'))
     features = pd.read_parquet(os.path.join(data_dir, 'processed', 'all_features.parquet'))
@@ -14,13 +16,7 @@ def train_catboost(data_dir='data'):
     df = train.merge(features, on='UniqueID', how='left')
 
     # Convert object columns to strings for CatBoost
-    cat_cols = ['Gender', 'IncomeCategory', 'CustomerStatus', 'ClientType', 
-                'MaritalStatus', 'OccupationCategory', 'IndustryCategory', 
-                'CustomerBankingType', 'CustomerOnboardingChannel', 
-                'ResidentialCityName', 'CountryCodeNationality', 
-                'LowIncomeFlag', 'CertificationTypeDescription', 'ContactPreference']
-    
-    for c in cat_cols:
+    for c in CAT_COLS:
         if c in df.columns:
             df[c] = df[c].fillna('Unknown').astype(str)
 
@@ -39,7 +35,7 @@ def train_catboost(data_dir='data'):
     models = []
     oof_preds = np.zeros(len(X))
     
-    cat_features = [c for c in cat_cols if c in X.columns]
+    cat_features = [c for c in CAT_COLS if c in X.columns]
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
