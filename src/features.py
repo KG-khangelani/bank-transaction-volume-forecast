@@ -140,9 +140,37 @@ def create_features(data_dir='data/inputs'):
 
     print("Engineering demographic features...")
     base_date = pl.datetime(2015, 11, 1)
+    birth_month = pl.col("BirthDate").dt.month()
+    birth_day = pl.col("BirthDate").dt.day()
+    birthday_after_prediction_start = (
+        (birth_month > 11) |
+        ((birth_month == 11) & (birth_day > 1))
+    )
     
     demo_df = demographics.with_columns([
         (base_date.dt.year() - pl.col("BirthDate").dt.year()).alias("Age"),
+        (pl.lit(2015) - pl.col("BirthDate").dt.year() - birthday_after_prediction_start.cast(pl.Int32))
+            .alias("age_at_prediction_start"),
+        pl.when(pl.col("BirthDate").is_not_null() & birth_month.is_in([11, 12, 1]))
+            .then(1)
+            .otherwise(0)
+            .alias("birthday_in_pred_window"),
+        pl.when(birth_month == 11)
+            .then(0)
+            .when(birth_month == 12)
+            .then(1)
+            .when(birth_month == 1)
+            .then(2)
+            .otherwise(-1)
+            .alias("birthday_pred_month_index"),
+        pl.when(birth_month == 11)
+            .then(birth_day - 1)
+            .when(birth_month == 12)
+            .then(30 + birth_day)
+            .when(birth_month == 1)
+            .then(61 + birth_day)
+            .otherwise(999)
+            .alias("days_to_birthday_in_pred_window"),
         pl.col("IncomeCategory").fill_null("Unknown"),
         pl.col("AnnualGrossIncome").fill_null(0.0)
     ])
@@ -177,7 +205,11 @@ def create_features(data_dir='data/inputs'):
         "card_txn_count": 0, "cash_txn_count": 0,
         "credit_to_debit_ratio": 0.0, "card_to_cash_ratio": 0.0, "balance_velocity": 0.0,
         "fin_interest_income_mean": 0.0, "fin_interest_revenue_mean": 0.0,
-        "Age": demo_df["Age"].mean()
+        "Age": demo_df["Age"].mean(),
+        "age_at_prediction_start": demo_df["age_at_prediction_start"].mean(),
+        "birthday_in_pred_window": 0,
+        "birthday_pred_month_index": -1,
+        "days_to_birthday_in_pred_window": 999
     }
     
     features = features.with_columns([
