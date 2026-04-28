@@ -36,6 +36,13 @@ BASE_MODELS = {
         "oof_path": "data/processed/oof_xgb.csv",
         "test_path": "data/processed/test_pred_xgb.csv",
     },
+    "hightail": {
+        "label": "High-tail correction",
+        "col": "pred_hightail",
+        "read_col": "pred_hightail",
+        "oof_path": "data/processed/oof_hightail.csv",
+        "test_path": "data/processed/test_pred_hightail.csv",
+    },
     "pytorch_both": {
         "label": "PyTorch both",
         "col": "pred_pytorch_both",
@@ -77,6 +84,15 @@ PYTORCH_BASE_STACKS = [
     ("lgbm_catboost_xgb", ["lgbm", "catboost", "xgb"]),
 ]
 
+HIGHTAIL_VARIANTS = [
+    "hightail",
+]
+
+HIGHTAIL_BASE_STACKS = [
+    ("lgbm_catboost", ["lgbm", "catboost"]),
+    ("lgbm_catboost_xgb", ["lgbm", "catboost", "xgb"]),
+]
+
 
 def _rmse(y, pred):
     return np.sqrt(mean_squared_error(y, pred))
@@ -96,9 +112,9 @@ def _load_prediction_frame(path, meta):
     return df
 
 
-def _available_pytorch_variants(require_test=False):
+def _available_optional_variants(names, require_test=False):
     variants = []
-    for name in PYTORCH_VARIANTS:
+    for name in names:
         meta = BASE_MODELS[name]
         if not os.path.exists(meta["oof_path"]):
             continue
@@ -108,8 +124,19 @@ def _available_pytorch_variants(require_test=False):
     return variants
 
 
+def _available_pytorch_variants(require_test=False):
+    return _available_optional_variants(PYTORCH_VARIANTS, require_test=require_test)
+
+
+def _available_hightail_variants(require_test=False):
+    return _available_optional_variants(HIGHTAIL_VARIANTS, require_test=require_test)
+
+
 def _build_scenarios():
     scenarios = list(TREE_SCENARIOS)
+    for variant in _available_hightail_variants():
+        for base_name, base_models in HIGHTAIL_BASE_STACKS:
+            scenarios.append((f"{base_name}_{variant}", [*base_models, variant]))
     for variant in _available_pytorch_variants():
         for base_name, base_models in PYTORCH_BASE_STACKS:
             scenarios.append((f"{base_name}_{variant}", [*base_models, variant]))
@@ -173,6 +200,10 @@ def _includes_pytorch(model_names):
     return any(name.startswith("pytorch_") for name in model_names)
 
 
+def _includes_hightail(model_names):
+    return "hightail" in model_names
+
+
 def train_stacking_model():
     print("Loading OOF predictions and training data for stacking ablations...")
 
@@ -182,6 +213,11 @@ def train_stacking_model():
     train = pd.read_csv("data/inputs/Train.csv")
     scenarios = _build_scenarios()
     available_pytorch = _available_pytorch_variants()
+    available_hightail = _available_hightail_variants()
+    if available_hightail:
+        print("High-tail correction OOF available for eligibility testing.")
+    else:
+        print("No high-tail correction OOF file found; skipping high-tail stack scenarios.")
     if available_pytorch:
         labels = ", ".join(BASE_MODELS[name]["label"] for name in available_pytorch)
         print(f"PyTorch variants available for eligibility testing: {labels}")
@@ -204,6 +240,7 @@ def train_stacking_model():
             "models": ",".join(model_names),
             "rmsle": stack_rmse,
             "includes_pytorch": _includes_pytorch(model_names),
+            "includes_hightail": _includes_hightail(model_names),
         })
         print(f"{scenario_name} | stacked OOF RMSLE: {stack_rmse:.4f}")
 
@@ -258,6 +295,8 @@ def train_stacking_model():
     primary_path = "submission_stacked_no_pytorch.csv"
     if _includes_pytorch(selected_models):
         primary_path = "submission_stacked_with_pytorch.csv"
+    elif _includes_hightail(selected_models):
+        primary_path = "submission_stacked_hightail.csv"
 
     submission = write_count_submission(test_df["UniqueID"], stacked_log_preds, primary_path)
     submission.to_csv("submission_stacked.csv", index=False)
