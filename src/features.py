@@ -46,7 +46,11 @@ def create_features(data_dir='data/inputs'):
         
         # Account Multiplicity & Internal Transfers
         pl.col("AccountID").n_unique().alias("unique_account_count"),
-        (pl.col("TransactionTypeDescription") == "Transfers & Payments").sum().alias("transfer_txn_count")
+        (pl.col("TransactionTypeDescription") == "Transfers & Payments").sum().alias("transfer_txn_count"),
+        
+        # Instability & Reversals
+        (pl.col("TransactionTypeDescription") == "Reversals & Adjustments").sum().alias("reversal_txn_count"),
+        (pl.col("TransactionTypeDescription") == "Unpaid / Returned Items").sum().alias("returned_txn_count")
     ]).collect()
     
     # Calculate Velocity Ratios (1-month average vs 3-month average)
@@ -56,7 +60,11 @@ def create_features(data_dir='data/inputs'):
         
         # Robust Transaction Ratios
         (pl.col("transfer_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("transfer_txn_ratio"),
-        (pl.col("txn_count_all") / pl.col("unique_account_count")).alias("txns_per_account")
+        (pl.col("txn_count_all") / pl.col("unique_account_count")).alias("txns_per_account"),
+        
+        # Pure Signal Ratios
+        (pl.col("reversal_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("reversal_ratio"),
+        (pl.col("returned_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("bounced_ratio")
     ])
 
     print("Engineering financial features...")
@@ -91,6 +99,8 @@ def create_features(data_dir='data/inputs'):
         "txn_velocity": 0.0, "spend_velocity": 0.0,
         "unique_account_count": 1, "transfer_txn_count": 0,
         "transfer_txn_ratio": 0.0, "txns_per_account": 0.0,
+        "reversal_txn_count": 0, "returned_txn_count": 0, 
+        "reversal_ratio": 0.0, "bounced_ratio": 0.0,
         "fin_interest_income_mean": 0.0, "fin_interest_revenue_mean": 0.0,
         "Age": demo_df["Age"].mean()
     }
