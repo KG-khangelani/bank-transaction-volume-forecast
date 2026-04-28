@@ -102,6 +102,7 @@ def train_pytorch(epochs=150, batch_size=256):
         model = TransactionSequenceModel(vocab_sizes, num_static_features).to(device)
         criterion = nn.MSELoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
         scaler = torch.cuda.amp.GradScaler()
         
         best_val_loss = float('inf')
@@ -118,6 +119,11 @@ def train_pytorch(epochs=150, batch_size=256):
                     loss = criterion(preds, y)
                 
                 scaler.scale(loss).backward()
+                
+                # Unscale gradients and clip to prevent explosive updates
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
                 scaler.step(optimizer)
                 scaler.update()
                 
@@ -142,6 +148,9 @@ def train_pytorch(epochs=150, batch_size=256):
                 best_val_loss = val_rmse
                 torch.save(model.state_dict(), f'models/pytorch_fold{fold}.pt')
                 best_preds = fold_preds
+                
+            # Step the learning rate scheduler based on validation score
+            scheduler.step(val_rmse)
                 
         print(f"Fold {fold+1} Best Val RMSLE: {best_val_loss:.4f}")
         oof_preds[val_idx] = best_preds

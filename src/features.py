@@ -38,8 +38,18 @@ def create_features(data_dir='data/inputs'):
         
         # Holiday Season 2014 (Nov 2014 - Jan 2015)
         amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).len().alias("txn_count_holiday_2014"),
-        amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).sum().alias("txn_amount_sum_holiday_2014")
+        amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).sum().alias("txn_amount_sum_holiday_2014"),
+        
+        # Momentum & Recency
+        ((pl.datetime(2015, 11, 1) - date_col.max()).dt.total_days()).alias("recency_days"),
+        ((date_col.max() - date_col.min()).dt.total_days()).alias("lifespan_days")
     ]).collect()
+    
+    # Calculate Velocity Ratios (1-month average vs 3-month average)
+    txn_features = txn_features.with_columns([
+        (pl.col("txn_count_last_1m") / (pl.col("txn_count_last_3m") / 3 + 0.001)).alias("txn_velocity"),
+        (pl.col("txn_amount_sum_last_1m") / (pl.col("txn_amount_sum_last_3m") / 3 + 0.001)).alias("spend_velocity")
+    ])
 
     print("Engineering financial features...")
     fin_features = financials.group_by("UniqueID").agg([
@@ -68,6 +78,9 @@ def create_features(data_dir='data/inputs'):
         "txn_count_last_1m": 0, "txn_amount_sum_last_1m": 0.0,
         "txn_count_last_3m": 0, "txn_amount_sum_last_3m": 0.0,
         "txn_count_holiday_2014": 0, "txn_amount_sum_holiday_2014": 0.0,
+        "recency_days": 1000.0, # High penalty for users with no transactions
+        "lifespan_days": 0.0,
+        "txn_velocity": 0.0, "spend_velocity": 0.0,
         "fin_interest_income_mean": 0.0, "fin_interest_revenue_mean": 0.0,
         "Age": demo_df["Age"].mean()
     }
