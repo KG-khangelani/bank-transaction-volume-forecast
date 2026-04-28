@@ -19,22 +19,29 @@ def create_features(data_dir='data/inputs'):
     feb_1_2015 = pl.datetime(2015, 2, 1)
     
     txn_features = transactions.group_by("UniqueID").agg([
-        # Global stats
-        pl.len().alias("txn_count_all"),
-        amt_col.sum().alias("txn_amount_sum_all"),
-        amt_col.mean().alias("txn_amount_mean_all"),
-        amt_col.std().alias("txn_amount_std_all"),
+        pl.col("TransactionAmount").len().alias("txn_count_all"),
+        pl.col("TransactionAmount").sum().alias("txn_amount_sum_all"),
+        pl.col("TransactionAmount").mean().alias("txn_amount_mean_all"),
+        pl.col("TransactionAmount").std().alias("txn_amount_std_all"),
+        
+        # Burn Rate Components
         (amt_col < 0).sum().alias("txn_debit_count"),
         (amt_col > 0).sum().alias("txn_credit_count"),
+        amt_col.filter(amt_col < 0).sum().abs().alias("txn_debit_sum"),
+        amt_col.filter(amt_col > 0).sum().alias("txn_credit_sum"),
+        
+        # Statement Balance Baseline
         pl.col("StatementBalance").mean().alias("stmt_balance_mean"),
         
         # Last 1 Month (Oct 2015)
         amt_col.filter(date_col >= oct_1_2015).len().alias("txn_count_last_1m"),
         amt_col.filter(date_col >= oct_1_2015).sum().alias("txn_amount_sum_last_1m"),
+        pl.col("StatementBalance").filter(date_col >= oct_1_2015).mean().alias("stmt_balance_mean_1m"),
         
         # Last 3 Months (Aug - Oct 2015)
         amt_col.filter(date_col >= aug_1_2015).len().alias("txn_count_last_3m"),
         amt_col.filter(date_col >= aug_1_2015).sum().alias("txn_amount_sum_last_3m"),
+        pl.col("StatementBalance").filter(date_col >= aug_1_2015).mean().alias("stmt_balance_mean_3m"),
         
         # Holiday Season 2014 (Nov 2014 - Jan 2015)
         amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).len().alias("txn_count_holiday_2014"),
@@ -50,7 +57,11 @@ def create_features(data_dir='data/inputs'):
         
         # Instability & Reversals
         (pl.col("TransactionTypeDescription") == "Reversals & Adjustments").sum().alias("reversal_txn_count"),
-        (pl.col("TransactionTypeDescription") == "Unpaid / Returned Items").sum().alias("returned_txn_count")
+        (pl.col("TransactionTypeDescription") == "Unpaid / Returned Items").sum().alias("returned_txn_count"),
+        
+        # Transaction Density Components
+        (pl.col("TransactionTypeDescription") == "Card Transactions").sum().alias("card_txn_count"),
+        (pl.col("TransactionTypeDescription") == "Withdrawals").sum().alias("cash_txn_count")
     ]).collect()
     
     # Calculate Velocity Ratios (1-month average vs 3-month average)
@@ -64,7 +75,12 @@ def create_features(data_dir='data/inputs'):
         
         # Pure Signal Ratios
         (pl.col("reversal_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("reversal_ratio"),
-        (pl.col("returned_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("bounced_ratio")
+        (pl.col("returned_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("bounced_ratio"),
+        
+        # Advanced Behavioral Ratios
+        (pl.col("txn_credit_sum") / (pl.col("txn_debit_sum") + 0.001)).alias("credit_to_debit_ratio"),
+        (pl.col("card_txn_count") / (pl.col("cash_txn_count") + 0.001)).alias("card_to_cash_ratio"),
+        (pl.col("stmt_balance_mean_1m") / (pl.col("stmt_balance_mean_3m") + 0.001)).alias("balance_velocity")
     ])
 
     print("Engineering financial features...")
@@ -90,7 +106,9 @@ def create_features(data_dir='data/inputs'):
     fill_dict = {
         "txn_count_all": 0, "txn_amount_sum_all": 0.0, "txn_amount_mean_all": 0.0,
         "txn_amount_std_all": 0.0, "txn_debit_count": 0, "txn_credit_count": 0,
+        "txn_debit_sum": 0.0, "txn_credit_sum": 0.0,
         "stmt_balance_mean": 0.0, 
+        "stmt_balance_mean_1m": 0.0, "stmt_balance_mean_3m": 0.0,
         "txn_count_last_1m": 0, "txn_amount_sum_last_1m": 0.0,
         "txn_count_last_3m": 0, "txn_amount_sum_last_3m": 0.0,
         "txn_count_holiday_2014": 0, "txn_amount_sum_holiday_2014": 0.0,
@@ -101,6 +119,8 @@ def create_features(data_dir='data/inputs'):
         "transfer_txn_ratio": 0.0, "txns_per_account": 0.0,
         "reversal_txn_count": 0, "returned_txn_count": 0, 
         "reversal_ratio": 0.0, "bounced_ratio": 0.0,
+        "card_txn_count": 0, "cash_txn_count": 0,
+        "credit_to_debit_ratio": 0.0, "card_to_cash_ratio": 0.0, "balance_velocity": 0.0,
         "fin_interest_income_mean": 0.0, "fin_interest_revenue_mean": 0.0,
         "Age": demo_df["Age"].mean()
     }
