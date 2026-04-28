@@ -22,11 +22,13 @@ if __name__ == "__main__":
     run_script("src/train.py")
     run_script("src/train_seq.py")
     run_script("src/train_cat.py")
+    run_script("src/train_xgb.py")
     
     print("\n--- PHASE 2: Generating Base Model Test Predictions ---")
     run_script("src/predict.py")
     run_script("src/predict_seq.py")
     run_script("src/predict_cat.py")
+    run_script("src/predict_xgb.py")
     
     print("\n--- PHASE 3: Training Meta-Model & Generating Final Submission ---")
     run_script("src/stacking.py")

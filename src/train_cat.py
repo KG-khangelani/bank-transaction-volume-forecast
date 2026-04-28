@@ -31,7 +31,7 @@ def train_catboost(data_dir='data'):
     df[feature_cols] = df[feature_cols].fillna(0)
 
     X = df[feature_cols]
-    y = df['next_3m_txn_count']
+    y = np.log1p(df['next_3m_txn_count'])
 
     print(f"Training CatBoost model on {len(X)} rows and {len(feature_cols)} features...")
 
@@ -49,15 +49,16 @@ def train_catboost(data_dir='data'):
         val_pool = Pool(X_val, y_val, cat_features=cat_features)
 
         model = CatBoostRegressor(
-            iterations=1500,
-            learning_rate=0.05,
-            depth=6,
-            loss_function='Poisson',
-            eval_metric='Poisson',
+            iterations=5000,
+            learning_rate=0.02,
+            depth=8,
+            l2_leaf_reg=3,
+            loss_function='RMSE',
+            eval_metric='RMSE',
             random_seed=42 + fold,
             task_type='GPU', # GPU acceleration
-            verbose=200,
-            early_stopping_rounds=50
+            verbose=500,
+            early_stopping_rounds=100
         )
 
         model.fit(train_pool, eval_set=val_pool)
@@ -65,16 +66,16 @@ def train_catboost(data_dir='data'):
         models.append(model)
         oof_preds[val_idx] = model.predict(X_val)
         
-        fold_rmse = np.sqrt(mean_squared_error(np.log1p(y_val), np.log1p(np.clip(oof_preds[val_idx], 0, None))))
+        fold_rmse = np.sqrt(mean_squared_error(y_val, oof_preds[val_idx]))
         print(f"Fold {fold+1} Validation RMSLE: {fold_rmse:.4f}")
 
-    overall_rmse = np.sqrt(mean_squared_error(np.log1p(y), np.log1p(np.clip(oof_preds, 0, None))))
+    overall_rmse = np.sqrt(mean_squared_error(y, oof_preds))
     print(f"Overall CatBoost OOF RMSLE: {overall_rmse:.4f}")
 
     # Save OOF predictions
     oof_df = pd.DataFrame({
         'UniqueID': df['UniqueID'],
-        'pred_catboost': np.log1p(np.clip(oof_preds, 0, None))
+        'pred_catboost': oof_preds
     })
     oof_df.to_csv(os.path.join(data_dir, 'processed', 'oof_catboost.csv'), index=False)
     print("OOF predictions saved to data/processed/oof_catboost.csv")

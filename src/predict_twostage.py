@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
-from catboost import CatBoostRegressor
+import lightgbm as lgb
 import os
 
-def predict_catboost(data_dir='data'):
+def generate_predictions(data_dir='data'):
     print("Loading test data and features...")
     test = pd.read_csv(os.path.join(data_dir, 'inputs', 'Test.csv'))
     features = pd.read_parquet(os.path.join(data_dir, 'processed', 'all_features.parquet'))
@@ -19,37 +19,42 @@ def predict_catboost(data_dir='data'):
     
     for c in cat_cols:
         if c in df.columns:
-            df[c] = df[c].fillna('Unknown').astype(str)
+            df[c] = df[c].astype('category')
 
-    drop_cols = ['UniqueID', 'BirthDate', 'next_3m_txn_count']
+    drop_cols = ['UniqueID', 'BirthDate']
     feature_cols = [c for c in df.columns if c not in drop_cols]
     
-    df[feature_cols] = df[feature_cols].fillna(0)
-
     X = df[feature_cols]
 
-    print("Loading CatBoost models and making predictions...")
-    model_files = [f for f in os.listdir('models') if f.startswith('catboost_fold')]
-    
+    print("Loading Two-Stage models and making predictions...")
     preds = np.zeros(len(X))
-    for mf in model_files:
-        model = CatBoostRegressor()
-        model.load_model(os.path.join('models', mf))
-        preds += model.predict(X)
+    num_folds = 5
+    
+    for i in range(num_folds):
+        clf = lgb.Booster(model_file=f'models/twostage/clf_fold{i}.txt')
+        reg_dec = lgb.Booster(model_file=f'models/twostage/dec_fold{i}.txt')
+        reg_inc = lgb.Booster(model_file=f'models/twostage/inc_fold{i}.txt')
         
-    preds /= len(model_files)
+        prob_inc = clf.predict(X)
+        pred_dec = reg_dec.predict(X)
+        pred_inc = reg_inc.predict(X)
+        
+        fold_pred = (prob_inc * pred_inc) + ((1 - prob_inc) * pred_dec)
+        preds += fold_pred
+        
+    preds /= num_folds
     
     # Final predictions already in log1p space
     final_preds = np.clip(preds, 0, None)
     
     print("Creating submission file...")
     submission = pd.DataFrame({
-        'UniqueID': df['UniqueID'],
+        'UniqueID': test['UniqueID'],
         'next_3m_txn_count': final_preds
     })
     
-    submission.to_csv('submission_catboost.csv', index=False)
-    print("Successfully generated submission_catboost.csv")
+    submission.to_csv('submission.csv', index=False)
+    print("Successfully generated submission.csv (Two-Stage)")
 
 if __name__ == "__main__":
-    predict_catboost()
+    generate_predictions()

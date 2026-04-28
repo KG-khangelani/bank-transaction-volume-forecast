@@ -25,22 +25,20 @@ class TransactionDataset(Dataset):
         
         seq = self.seq_data.get(uid, None)
         # Determine sequence length from the first available sequence in seq_data
-        seq_len = len(next(iter(self.seq_data.values()))['num_feats']) if self.seq_data else 100
+        seq_len = 34
         
         if seq is None:
-            num_feats = torch.zeros((seq_len, 2), dtype=torch.float32)
-            cat_feats = torch.zeros((seq_len, 3), dtype=torch.long)
+            num_feats = torch.zeros((seq_len, 3), dtype=torch.float32)
         else:
             num_feats = torch.tensor(seq['num_feats'], dtype=torch.float32)
-            cat_feats = torch.tensor(seq['cat_feats'], dtype=torch.long)
             
         static = torch.tensor(self.static_data[idx], dtype=torch.float32)
         
         if self.targets is not None:
             target = torch.tensor(self.targets[idx], dtype=torch.float32)
-            return num_feats, cat_feats, static, target
+            return num_feats, static, target
         
-        return num_feats, cat_feats, static
+        return num_feats, static
 
 def load_data(data_dir='data/inputs'):
     print("Loading data for PyTorch training...")
@@ -74,7 +72,7 @@ def load_data(data_dir='data/inputs'):
     
     uids = train_df['UniqueID'].values
     static_data = train_df[feat_cols].values
-    targets = train_df['next_3m_txn_count'].values
+    targets = np.log1p(train_df['next_3m_txn_count'].values)
     
     return uids, seq_data, static_data, targets, vocab_sizes, len(feat_cols)
 
@@ -97,8 +95,8 @@ def train_pytorch(epochs=150, batch_size=256):
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
         
-        model = TransactionSequenceModel(vocab_sizes, num_static_features).to(device)
-        criterion = nn.PoissonNLLLoss(log_input=True)
+        model = TransactionSequenceModel({}, num_static_features).to(device)
+        criterion = nn.MSELoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
         scaler = torch.cuda.amp.GradScaler()
@@ -110,15 +108,15 @@ def train_pytorch(epochs=150, batch_size=256):
         for epoch in range(epochs):
             model.train()
             train_loss = 0
-            for num_feats, cat_feats, static, y in train_loader:
-                num_feats, cat_feats, static, y = num_feats.to(device), cat_feats.to(device), static.to(device), y.to(device)
+            for num_feats, static, y in train_loader:
+                num_feats, static, y = num_feats.to(device), static.to(device), y.to(device)
                 
                 # GPU Vectorized Log1p Scaling
                 num_feats = torch.sign(num_feats) * torch.log1p(torch.abs(num_feats))
                 
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast():
-                    preds = model(num_feats, cat_feats, static)
+                    preds = model(num_feats, static)
                     loss = criterion(preds, y)
                 
                 scaler.scale(loss).backward()
@@ -136,21 +134,20 @@ def train_pytorch(epochs=150, batch_size=256):
             val_loss = 0
             fold_preds = []
             with torch.no_grad():
-                for num_feats, cat_feats, static, y in val_loader:
-                    num_feats, cat_feats, static, y = num_feats.to(device), cat_feats.to(device), static.to(device), y.to(device)
+                for num_feats, static, y in val_loader:
+                    num_feats, static, y = num_feats.to(device), static.to(device), y.to(device)
                     
                     # GPU Vectorized Log1p Scaling
                     num_feats = torch.sign(num_feats) * torch.log1p(torch.abs(num_feats))
                     
                     with torch.cuda.amp.autocast():
-                        preds = model(num_feats, cat_feats, static)
+                        preds = model(num_feats, static)
                         loss = criterion(preds, y)
                     val_loss += loss.item()
-                    fold_preds.extend(torch.exp(preds).float().cpu().numpy())
+                    fold_preds.extend(preds.float().cpu().numpy())
             
-            fold_preds_np = np.clip(fold_preds, 0, None)
-            val_rmse = np.sqrt(np.mean((np.log1p(targets[val_idx]) - np.log1p(fold_preds_np))**2))
-            print(f"Epoch {epoch+1} | Train Loss (Poisson): {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}", flush=True)
+            val_rmse = np.sqrt(val_loss / len(val_loader))
+            print(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val RMSLE: {val_rmse:.4f}", flush=True)
             
             if val_rmse < best_val_loss:
                 best_val_loss = val_rmse
@@ -170,12 +167,12 @@ def train_pytorch(epochs=150, batch_size=256):
         print(f"Fold {fold+1} Best Val RMSLE: {best_val_loss:.4f}")
         oof_preds[val_idx] = best_preds
         
-    overall_rmse = np.sqrt(np.mean((np.log1p(oof_preds) - np.log1p(targets))**2))
+    overall_rmse = np.sqrt(np.mean((oof_preds - targets)**2))
     print(f"Overall PyTorch OOF RMSLE: {overall_rmse:.4f}")
 
     oof_df = pd.DataFrame({
         'UniqueID': uids,
-        'pred_pytorch': np.log1p(np.clip(oof_preds, 0, None))
+        'pred_pytorch': oof_preds
     })
     oof_df.to_csv('data/processed/oof_pytorch.csv', index=False)
     print("OOF predictions saved to data/processed/oof_pytorch.csv")

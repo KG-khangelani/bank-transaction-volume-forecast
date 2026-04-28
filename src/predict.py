@@ -38,8 +38,8 @@ def generate_predictions(data_dir='data'):
     # Average the predictions across all folds
     preds /= len(model_files)
     
-    # Convert Poisson expected counts back to log1p space for Stacking and Zindi
-    final_preds = np.log1p(np.clip(preds, 0, None))
+    # Final predictions already in log1p space
+    final_preds = np.clip(preds, 0, None)
     
     print("Creating submission file...")
     submission = pd.DataFrame({

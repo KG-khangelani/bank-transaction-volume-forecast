@@ -32,7 +32,7 @@ def train_model(data_dir='data'):
     
     # Target transformation: log1p to inherently optimize for RMSLE
     # because RMSE on log1p(y) == RMSLE on y
-    y = df['next_3m_txn_count']
+    y = np.log1p(df['next_3m_txn_count'])
 
     print(f"Training LightGBM model on {len(X)} rows and {len(feature_cols)} features...")
 
@@ -48,14 +48,17 @@ def train_model(data_dir='data'):
         val_data = lgb.Dataset(X_val, label=y_val, categorical_feature=[c for c in cat_cols if c in X.columns])
 
         params = {
-            'objective': 'poisson',
-            'metric': 'poisson',
-            'learning_rate': 0.05,
-            'num_leaves': 31,
-            'max_depth': 6,
-            'min_child_samples': 20,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
+            'objective': 'regression',
+            'metric': 'rmse',
+            'learning_rate': 0.0226,
+            'num_leaves': 76,
+            'max_depth': 9,
+            'min_child_samples': 45,
+            'subsample': 0.539,
+            'colsample_bytree': 0.528,
+            'reg_alpha': 0.00155,
+            'reg_lambda': 0.01142,
+            'min_split_gain': 0.193,
             'verbose': -1,
             'random_state': 42 + fold
         }
@@ -63,24 +66,24 @@ def train_model(data_dir='data'):
         model = lgb.train(
             params,
             train_data,
-            num_boost_round=1000,
+            num_boost_round=5000,
             valid_sets=[train_data, val_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
+            callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)]
         )
 
         models.append(model)
         oof_preds[val_idx] = model.predict(X_val)
         
-        fold_rmse = np.sqrt(mean_squared_error(np.log1p(y_val), np.log1p(np.clip(oof_preds[val_idx], 0, None))))
+        fold_rmse = np.sqrt(mean_squared_error(y_val, oof_preds[val_idx]))
         print(f"Fold {fold+1} Validation RMSLE: {fold_rmse:.4f}")
 
-    overall_rmse = np.sqrt(mean_squared_error(np.log1p(y), np.log1p(np.clip(oof_preds, 0, None))))
+    overall_rmse = np.sqrt(mean_squared_error(y, oof_preds))
     print(f"Overall OOF RMSLE: {overall_rmse:.4f}")
 
     # Save OOF predictions for stacking
     oof_df = pd.DataFrame({
         'UniqueID': df['UniqueID'],
-        'pred_lgbm': np.log1p(np.clip(oof_preds, 0, None))
+        'pred_lgbm': oof_preds
     })
     oof_df.to_csv(os.path.join(data_dir, 'processed', 'oof_lgbm.csv'), index=False)
     print("OOF predictions saved to data/processed/oof_lgbm.csv")

@@ -14,9 +14,23 @@ def create_features(data_dir='data/inputs'):
     amt_col = pl.col("TransactionAmount")
     
     oct_1_2015 = pl.datetime(2015, 10, 1)
+    sep_1_2015 = pl.datetime(2015, 9, 1)
     aug_1_2015 = pl.datetime(2015, 8, 1)
+    jul_1_2015 = pl.datetime(2015, 7, 1)
+    jun_1_2015 = pl.datetime(2015, 6, 1)
+    may_1_2015 = pl.datetime(2015, 5, 1)
+    
     nov_1_2014 = pl.datetime(2014, 11, 1)
     feb_1_2015 = pl.datetime(2015, 2, 1)
+    nov_1_2013 = pl.datetime(2013, 11, 1)
+    feb_1_2014 = pl.datetime(2014, 2, 1)
+    
+    apr_1_2015 = pl.datetime(2015, 4, 1)
+    mar_1_2015 = pl.datetime(2015, 3, 1)
+    feb_1_2015b = pl.datetime(2015, 2, 1)
+    jan_1_2015 = pl.datetime(2015, 1, 1)
+    dec_1_2014 = pl.datetime(2014, 12, 1)
+    nov_1_2014b = pl.datetime(2014, 11, 1)
     
     txn_features = transactions.group_by("UniqueID").agg([
         pl.col("TransactionAmount").len().alias("txn_count_all"),
@@ -43,9 +57,23 @@ def create_features(data_dir='data/inputs'):
         amt_col.filter(date_col >= aug_1_2015).sum().alias("txn_amount_sum_last_3m"),
         pl.col("StatementBalance").filter(date_col >= aug_1_2015).mean().alias("stmt_balance_mean_3m"),
         
-        # Holiday Season 2014 (Nov 2014 - Jan 2015)
-        amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).len().alias("txn_count_holiday_2014"),
-        amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).sum().alias("txn_amount_sum_holiday_2014"),
+        # Holiday Lags (Autoregression)
+        amt_col.filter((date_col >= nov_1_2014) & (date_col < feb_1_2015)).len().alias("target_lag_1yr"),
+        amt_col.filter((date_col >= nov_1_2013) & (date_col < feb_1_2014)).len().alias("target_lag_2yr"),
+        
+        # Monthly Micro-Lags (Last 6 Months)
+        amt_col.filter(date_col >= oct_1_2015).len().alias("txn_count_m1"),
+        amt_col.filter((date_col >= sep_1_2015) & (date_col < oct_1_2015)).len().alias("txn_count_m2"),
+        amt_col.filter((date_col >= aug_1_2015) & (date_col < sep_1_2015)).len().alias("txn_count_m3"),
+        amt_col.filter((date_col >= jul_1_2015) & (date_col < aug_1_2015)).len().alias("txn_count_m4"),
+        amt_col.filter((date_col >= jun_1_2015) & (date_col < jul_1_2015)).len().alias("txn_count_m5"),
+        amt_col.filter((date_col >= may_1_2015) & (date_col < jun_1_2015)).len().alias("txn_count_m6"),
+        amt_col.filter((date_col >= apr_1_2015) & (date_col < may_1_2015)).len().alias("txn_count_m7"),
+        amt_col.filter((date_col >= mar_1_2015) & (date_col < apr_1_2015)).len().alias("txn_count_m8"),
+        amt_col.filter((date_col >= feb_1_2015b) & (date_col < mar_1_2015)).len().alias("txn_count_m9"),
+        amt_col.filter((date_col >= jan_1_2015) & (date_col < feb_1_2015b)).len().alias("txn_count_m10"),
+        amt_col.filter((date_col >= dec_1_2014) & (date_col < jan_1_2015)).len().alias("txn_count_m11"),
+        amt_col.filter((date_col >= nov_1_2014b) & (date_col < dec_1_2014)).len().alias("txn_count_m12"),
         
         # Momentum & Recency
         ((pl.datetime(2015, 11, 1) - date_col.max()).dt.total_days()).alias("recency_days"),
@@ -66,8 +94,24 @@ def create_features(data_dir='data/inputs'):
     
     # Calculate Velocity Ratios (1-month average vs 3-month average)
     txn_features = txn_features.with_columns([
-        (pl.col("txn_count_last_1m") / (pl.col("txn_count_last_3m") / 3 + 0.001)).alias("txn_velocity"),
-        (pl.col("txn_amount_sum_last_1m") / (pl.col("txn_amount_sum_last_3m") / 3 + 0.001)).alias("spend_velocity"),
+        (pl.col("txn_count_last_1m").log1p() - (pl.col("txn_count_last_3m") / 3).log1p()).alias("txn_velocity"),
+        (pl.col("txn_amount_sum_last_1m").log1p() - (pl.col("txn_amount_sum_last_3m") / 3).log1p()).alias("spend_velocity"),
+        
+        # Holiday Year-Over-Year Growth (Log Difference bounds the variance)
+        (pl.col("target_lag_1yr").log1p() - pl.col("target_lag_2yr").log1p()).alias("yoy_growth_ratio"),
+        
+        # Month-over-Month Acceleration (1st derivative of txn growth)
+        (pl.col("txn_count_m1").log1p() - pl.col("txn_count_m2").log1p()).alias("mom_accel_1"),
+        (pl.col("txn_count_m2").log1p() - pl.col("txn_count_m3").log1p()).alias("mom_accel_2"),
+        (pl.col("txn_count_m3").log1p() - pl.col("txn_count_m4").log1p()).alias("mom_accel_3"),
+        
+        # 2nd Derivative (Jerk) - Is the acceleration itself accelerating?
+        # mom_accel_1 - mom_accel_2 = (m1-m2) - (m2-m3) = m1 - 2*m2 + m3
+        (pl.col("txn_count_m1").log1p() - 2*pl.col("txn_count_m2").log1p() + pl.col("txn_count_m3").log1p()).alias("mom_jerk"),
+        
+        # 6-month rolling mean vs current (trend vs recent)
+        ((pl.col("txn_count_m1") + pl.col("txn_count_m2") + pl.col("txn_count_m3") +
+          pl.col("txn_count_m4") + pl.col("txn_count_m5") + pl.col("txn_count_m6")) / 6).alias("txn_count_6m_avg"),
         
         # Robust Transaction Ratios
         (pl.col("transfer_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("transfer_txn_ratio"),
@@ -81,6 +125,11 @@ def create_features(data_dir='data/inputs'):
         (pl.col("txn_credit_sum") / (pl.col("txn_debit_sum") + 0.001)).alias("credit_to_debit_ratio"),
         (pl.col("card_txn_count") / (pl.col("cash_txn_count") + 0.001)).alias("card_to_cash_ratio"),
         (pl.col("stmt_balance_mean_1m") / (pl.col("stmt_balance_mean_3m") + 0.001)).alias("balance_velocity")
+    ])
+    
+    # Post-hoc: recent vs 6m avg (requires 6m_avg to exist first)
+    txn_features = txn_features.with_columns([
+        (pl.col("txn_count_m1").log1p() - pl.col("txn_count_6m_avg").log1p()).alias("recent_vs_trend")
     ])
 
     print("Engineering financial features...")
@@ -111,7 +160,13 @@ def create_features(data_dir='data/inputs'):
         "stmt_balance_mean_1m": 0.0, "stmt_balance_mean_3m": 0.0,
         "txn_count_last_1m": 0, "txn_amount_sum_last_1m": 0.0,
         "txn_count_last_3m": 0, "txn_amount_sum_last_3m": 0.0,
-        "txn_count_holiday_2014": 0, "txn_amount_sum_holiday_2014": 0.0,
+        "target_lag_1yr": 0, "target_lag_2yr": 0, "yoy_growth_ratio": 0.0,
+        "txn_count_m1": 0, "txn_count_m2": 0, "txn_count_m3": 0,
+        "txn_count_m4": 0, "txn_count_m5": 0, "txn_count_m6": 0,
+        "txn_count_m7": 0, "txn_count_m8": 0, "txn_count_m9": 0,
+        "txn_count_m10": 0, "txn_count_m11": 0, "txn_count_m12": 0,
+        "mom_accel_1": 0.0, "mom_accel_2": 0.0, "mom_accel_3": 0.0,
+        "mom_jerk": 0.0, "txn_count_6m_avg": 0.0, "recent_vs_trend": 0.0,
         "recency_days": 1000.0, # High penalty for users with no transactions
         "lifespan_days": 0.0,
         "txn_velocity": 0.0, "spend_velocity": 0.0,

@@ -24,17 +24,12 @@ class TransactionSequenceModel(nn.Module):
     def __init__(self, vocab_sizes, num_static_features, hidden_dim=128, num_layers=2):
         super().__init__()
         
-        # Categorical Embeddings for sequence features (0 is padding)
-        self.type_emb = nn.Embedding(vocab_sizes.get("TransactionTypeDescription", 20) + 1, 16, padding_idx=0)
-        self.batch_emb = nn.Embedding(vocab_sizes.get("TransactionBatchDescription", 10) + 1, 16, padding_idx=0)
-        self.dc_emb = nn.Embedding(vocab_sizes.get("IsDebitCredit", 3) + 1, 4, padding_idx=0)
-        
-        # Sequence input dim = num_feats (2: Amount, Balance) + emb_dims (16+16+4) = 38
-        seq_input_dim = 2 + 16 + 16 + 4
+        # Sequence input dim = 3 (Monthly Count, Sum, Balance)
+        seq_input_dim = 3
         
         # Projection to hidden_dim for transformer
         self.input_proj = nn.Linear(seq_input_dim, hidden_dim)
-        self.pos_encoder = PositionalEncoding(hidden_dim)
+        self.pos_encoder = PositionalEncoding(hidden_dim, max_len=34) # 34 months
         
         # Transformer Encoder layer to process temporal transaction data using Attention
         encoder_layer = nn.TransformerEncoderLayer(
@@ -62,22 +57,13 @@ class TransactionSequenceModel(nn.Module):
             nn.Linear(64, 1)
         )
         
-    def forward(self, seq_num_feats, seq_cat_feats, static_feats):
+    def forward(self, seq_num_feats, static_feats):
         """
-        seq_num_feats: [batch_size, seq_len, 2]
-        seq_cat_feats: [batch_size, seq_len, 3] (type, batch, debit_credit)
+        seq_num_feats: [batch_size, 34, 3]
         static_feats:  [batch_size, num_static_features]
         """
-        # Embed categorical sequence features
-        t_emb = self.type_emb(seq_cat_feats[:, :, 0])
-        b_emb = self.batch_emb(seq_cat_feats[:, :, 1])
-        d_emb = self.dc_emb(seq_cat_feats[:, :, 2])
-        
-        # Concatenate sequence features together
-        seq_x = torch.cat([seq_num_feats, t_emb, b_emb, d_emb], dim=-1)
-        
         # Transformer Processing
-        seq_x = self.input_proj(seq_x)
+        seq_x = self.input_proj(seq_num_feats)
         seq_x = self.pos_encoder(seq_x)
         
         trans_out = self.transformer(seq_x)

@@ -1,0 +1,134 @@
+"""
+Optuna hyperparameter search for LightGBM.
+Overwrites src/train.py params with the best found configuration.
+Run this INSTEAD of src/train.py, then run the rest of the pipeline normally.
+"""
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+import optuna
+from sklearn.model_selection import KFold
+from sklearn.metrics import mean_squared_error
+import os
+import json
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def load_data(data_dir='data'):
+    train    = pd.read_csv(os.path.join(data_dir, 'inputs', 'Train.csv'))
+    features = pd.read_parquet(os.path.join(data_dir, 'processed', 'all_features.parquet'))
+    df       = train.merge(features, on='UniqueID', how='left')
+
+    cat_cols = ['Gender', 'IncomeCategory', 'CustomerStatus', 'ClientType',
+                'MaritalStatus', 'OccupationCategory', 'IndustryCategory',
+                'CustomerBankingType', 'CustomerOnboardingChannel',
+                'ResidentialCityName', 'CountryCodeNationality',
+                'LowIncomeFlag', 'CertificationTypeDescription', 'ContactPreference']
+    for c in cat_cols:
+        if c in df.columns:
+            df[c] = df[c].astype('category')
+
+    drop_cols   = ['UniqueID', 'BirthDate', 'next_3m_txn_count']
+    feature_cols = [c for c in df.columns if c not in drop_cols]
+    X = df[feature_cols]
+    y = np.log1p(df['next_3m_txn_count'])
+    return X, y, feature_cols, cat_cols
+
+def objective(trial, X, y, cat_cols):
+    params = {
+        'objective':          'regression',
+        'metric':             'rmse',
+        'verbose':            -1,
+        'random_state':       42,
+        # Search space
+        'learning_rate':      trial.suggest_float('learning_rate',     0.005, 0.05,  log=True),
+        'num_leaves':         trial.suggest_int(  'num_leaves',        31,    255),
+        'max_depth':          trial.suggest_int(  'max_depth',         4,     10),
+        'min_child_samples':  trial.suggest_int(  'min_child_samples', 10,    80),
+        'subsample':          trial.suggest_float('subsample',         0.5,   1.0),
+        'colsample_bytree':   trial.suggest_float('colsample_bytree',  0.5,   1.0),
+        'reg_alpha':          trial.suggest_float('reg_alpha',         1e-4,  10.0, log=True),
+        'reg_lambda':         trial.suggest_float('reg_lambda',        1e-4,  10.0, log=True),
+        'min_split_gain':     trial.suggest_float('min_split_gain',    0.0,   1.0),
+    }
+
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof = np.zeros(len(X))
+    valid_cats = [c for c in cat_cols if c in X.columns]
+
+    for train_idx, val_idx in kf.split(X):
+        dtrain = lgb.Dataset(X.iloc[train_idx], label=y.iloc[train_idx],
+                             categorical_feature=valid_cats)
+        dval   = lgb.Dataset(X.iloc[val_idx],   label=y.iloc[val_idx],
+                             categorical_feature=valid_cats)
+        model = lgb.train(
+            params, dtrain,
+            num_boost_round=3000,
+            valid_sets=[dval],
+            callbacks=[lgb.early_stopping(50, verbose=False)]
+        )
+        oof[val_idx] = model.predict(X.iloc[val_idx])
+
+    return np.sqrt(mean_squared_error(y, oof))
+
+
+def run_study(n_trials=50):
+    print("Loading data...")
+    X, y, feature_cols, cat_cols = load_data()
+
+    print(f"Starting Optuna study ({n_trials} trials)...")
+    study = optuna.create_study(direction='minimize',
+                                sampler=optuna.samplers.TPESampler(seed=42))
+    study.optimize(lambda trial: objective(trial, X, y, cat_cols),
+                   n_trials=n_trials,
+                   show_progress_bar=True)
+
+    print(f"\nBest OOF RMSLE: {study.best_value:.4f}")
+    print("Best params:")
+    for k, v in study.best_params.items():
+        print(f"  {k}: {v}")
+
+    # Persist best params
+    os.makedirs('data/processed', exist_ok=True)
+    with open('data/processed/best_lgbm_params.json', 'w') as f:
+        json.dump(study.best_params, f, indent=2)
+    print("Best params saved to data/processed/best_lgbm_params.json")
+
+    # Retrain final 5-fold model with best params
+    print("\nRetraining 5-fold LightGBM with best params + saving OOF...")
+    best_params = {
+        'objective': 'regression', 'metric': 'rmse', 'verbose': -1,
+        **study.best_params
+    }
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_preds = np.zeros(len(X))
+    valid_cats = [c for c in cat_cols if c in X.columns]
+    os.makedirs('models', exist_ok=True)
+    models = []
+
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
+        dtrain = lgb.Dataset(X.iloc[train_idx], label=y.iloc[train_idx],
+                             categorical_feature=valid_cats)
+        dval   = lgb.Dataset(X.iloc[val_idx],   label=y.iloc[val_idx],
+                             categorical_feature=valid_cats)
+        model = lgb.train(
+            best_params, dtrain,
+            num_boost_round=5000,
+            valid_sets=[dtrain, dval],
+            callbacks=[lgb.early_stopping(100, verbose=False)]
+        )
+        oof_preds[val_idx] = model.predict(X.iloc[val_idx])
+        fold_rmse = np.sqrt(mean_squared_error(y.iloc[val_idx], oof_preds[val_idx]))
+        print(f"  Fold {fold+1} RMSLE: {fold_rmse:.4f}")
+        model.save_model(f'models/lgb_fold{fold}.txt')
+        models.append(model)
+
+    overall = np.sqrt(mean_squared_error(y, oof_preds))
+    print(f"Overall LightGBM OOF RMSLE: {overall:.4f}")
+
+    pd.DataFrame({'UniqueID': pd.read_csv('data/inputs/Train.csv')['UniqueID'],
+                  'pred_lgbm': oof_preds}).to_csv('data/processed/oof_lgbm.csv', index=False)
+    print("OOF saved to data/processed/oof_lgbm.csv")
+
+if __name__ == "__main__":
+    run_study(n_trials=50)

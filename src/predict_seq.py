@@ -41,7 +41,6 @@ def predict_pytorch(batch_size=256):
     
     seq_data = joblib.load('data/processed/sequence_features.joblib')
     vocabs = joblib.load('data/processed/vocabs.joblib')
-    vocab_sizes = {k: len(v) for k, v in vocabs.items()}
     
     uids = test_df['UniqueID'].values
     static_data = test_df[feat_cols].values
@@ -54,28 +53,27 @@ def predict_pytorch(batch_size=256):
     
     print("Loading PyTorch models and predicting...")
     for fold in range(num_folds):
-        model = TransactionSequenceModel(vocab_sizes, len(feat_cols)).to(device)
+        model = TransactionSequenceModel({}, len(feat_cols)).to(device)
         model.load_state_dict(torch.load(f'models/pytorch_fold{fold}.pt', map_location=device))
         model.eval()
         
         fold_preds = []
         with torch.no_grad():
-            for num_feats, cat_feats, static in loader:
-                num_feats, cat_feats, static = num_feats.to(device), cat_feats.to(device), static.to(device)
+            for num_feats, static in loader:
+                num_feats, static = num_feats.to(device), static.to(device)
                 
                 # GPU Vectorized Log1p Scaling (fixes missing scaling on inference!)
                 num_feats = torch.sign(num_feats) * torch.log1p(torch.abs(num_feats))
                 
-                out = model(num_feats, cat_feats, static)
-                # PyTorch outputs log(lambda), so we use torch.exp to get lambda (raw counts)
-                fold_preds.extend(torch.exp(out).cpu().numpy())
+                out = model(num_feats, static)
+                fold_preds.extend(out.cpu().numpy())
                 
         preds += np.array(fold_preds)
         
     preds /= num_folds
     
-    # Convert Poisson expected counts back to log1p space for Stacking and Zindi
-    final_preds = np.log1p(np.clip(preds, 0, None))
+    # Final predictions already in log1p space
+    final_preds = np.clip(preds, 0, None)
     
     submission = pd.DataFrame({
         'UniqueID': uids,
