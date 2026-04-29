@@ -84,14 +84,18 @@ def save_log_predictions(uids, pred_log, pred_col, output_path, expected_rows=EX
 
 
 def write_count_submission(uids, pred_log, output_path, expected_rows=EXPECTED_TEST_ROWS):
-    pred_count = log_to_count(pred_log)
+    pred_log = np.asarray(pred_log, dtype=np.float64)
+    if not np.isfinite(pred_log).all():
+        raise ValueError("Submission predictions contain NaN or infinite values.")
     df = pd.DataFrame({
         "UniqueID": uids,
-        "next_3m_txn_count": pred_count,
+        # Zindi scores RMSE against log1p(target), so the submitted values must
+        # stay in log space even though the column keeps the target name.
+        "next_3m_txn_count": np.clip(pred_log, 0, None),
     })
     validate_submission(df, expected_rows=expected_rows)
     df.to_csv(output_path, index=False)
-    print(f"Saved raw-count submission to {output_path}")
+    print(f"Saved log-space Zindi submission to {output_path}")
     return df
 
 
@@ -108,6 +112,11 @@ def validate_submission(df, expected_rows=EXPECTED_TEST_ROWS):
         raise ValueError("Submission contains infinite predictions.")
     if (preds < 0).any():
         raise ValueError("Submission contains negative predictions.")
+    if preds.mean() > 20 or preds.max() > 20:
+        raise ValueError(
+            "Submission values look like raw counts, but this competition expects "
+            "log1p predictions. Use log-space predictions for upload."
+        )
 
 
 def require_nvidia_gpu():
@@ -123,6 +132,48 @@ def require_nvidia_gpu():
             "GPU execution is mandatory for this pipeline, but nvidia-smi failed. "
             f"Details: {detail}"
         )
+
+
+def collect_polars(lazy_frame, pl_module, context):
+    if os.environ.get("REQUIRE_POLARS_GPU", "0") != "1":
+        return lazy_frame.collect()
+
+    require_nvidia_gpu()
+    if not hasattr(pl_module, "GPUEngine"):
+        raise RuntimeError(
+            "Polars GPU execution is mandatory, but this Polars installation does not "
+            "expose pl.GPUEngine. Rebuild the container with Polars GPU support, or "
+            "unset REQUIRE_POLARS_GPU for the stable CPU feature-engineering path."
+        )
+
+    engine = pl_module.GPUEngine(
+        device=int(os.environ.get("POLARS_GPU_DEVICE", "0")),
+        raise_on_fail=True,
+    )
+    try:
+        return lazy_frame.collect(engine=engine)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{context} could not execute on the Polars GPU engine. "
+            "Install/enable RAPIDS cudf-polars support, or unset REQUIRE_POLARS_GPU "
+            "for the stable CPU feature-engineering path."
+        ) from exc
+
+
+def lightgbm_gpu_params():
+    device_type = os.environ.get("LIGHTGBM_DEVICE_TYPE", "").strip().lower()
+    if not device_type or device_type in {"cpu", "none", "0", "false"}:
+        return {}
+
+    require_nvidia_gpu()
+    params = {"device_type": device_type}
+    if device_type == "gpu":
+        params.update({
+            "gpu_platform_id": int(os.environ.get("LIGHTGBM_GPU_PLATFORM_ID", "0")),
+            "gpu_device_id": int(os.environ.get("LIGHTGBM_GPU_DEVICE_ID", "0")),
+            "gpu_use_dp": os.environ.get("LIGHTGBM_GPU_USE_DP", "0") == "1",
+        })
+    return params
 
 
 def require_torch_cuda(torch_module):

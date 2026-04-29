@@ -2,7 +2,7 @@ import polars as pl
 import numpy as np
 import os
 import joblib
-from pipeline_utils import SEQUENCE_LENGTH
+from pipeline_utils import SEQUENCE_LENGTH, collect_polars
 
 def create_sequence_features(data_dir='data/inputs', max_seq_len=SEQUENCE_LENGTH):
     print("Loading datasets with Polars for sequence extraction...")
@@ -20,7 +20,7 @@ def create_sequence_features(data_dir='data/inputs', max_seq_len=SEQUENCE_LENGTH
         ((pl.col("Year") - 2012) * 12 + pl.col("Month") - 12).alias("MonthIdx"),
         pl.col("TransactionAmount").fill_null(0.0),
         pl.col("StatementBalance").fill_null(0.0)
-    ]).collect()
+    ])
 
     print("Aggregating macro-economic monthly time steps...")
     
@@ -34,12 +34,12 @@ def create_sequence_features(data_dir='data/inputs', max_seq_len=SEQUENCE_LENGTH
     print("Grouping sequences by customer...")
     
     # Group by customer to create the sequence
-    grouped = monthly.group_by("UniqueID", maintain_order=True).agg([
+    grouped = collect_polars(monthly.group_by("UniqueID", maintain_order=True).agg([
         pl.col("MonthIdx"),
         pl.col("monthly_count"),
         pl.col("monthly_sum"),
         pl.col("monthly_balance")
-    ])
+    ]), pl, "PyTorch sequence feature extraction")
     
     grouped_df = grouped.to_pandas()
     

@@ -20,6 +20,7 @@ The dataset contains anonymised behavioural data for **11,944 Nedbank customers*
 - **Transaction Amount**: `TransactionAmount` is signed: negative values indicate debits, positive values indicate credits.
 - **Target Variable**: `next_3m_txn_count` (non-negative integer).
 - **Evaluation Metric**: RMSLE (Root Mean Squared Logarithmic Error).
+- **Submission Format**: submit `np.log1p(predicted_count)` in `next_3m_txn_count`, not raw counts.
 - **Data Quality**: This is real-world banking data. As with any production dataset, you should expect missing values, inconsistencies, and fields that require careful inspection. Thoughtful data exploration and cleaning will be rewarded. No target leakage is present in the feature tables.
 
 ### File Structure & Sizes
@@ -78,15 +79,15 @@ flowchart TD
     subgraph Prediction State
         TestMerge[Merge Test with Features]
         Predict[Ensemble Inference]
-        ExpTransform[expm1 Reverse Transform]
+        SubmitTransform[Keep log1p Predictions]
         Submit[submission.csv]
         
         AllFeats --> TestMerge
         Test --> TestMerge
         TestMerge --> Predict
         LGBM -->|Saved Models| Predict
-        Predict --> ExpTransform
-        ExpTransform --> Submit
+        Predict --> SubmitTransform
+        SubmitTransform --> Submit
     end
 ```
 
@@ -120,12 +121,20 @@ Ensure you have your data located in `data/inputs/`. Since the repository includ
    ```bash
    docker compose up -d
    ```
-2. Execute the workflow:
+2. Execute the guarded full workflow:
    ```bash
-   docker exec bank-transaction-volume-forecast-jupyter-1 python run_pipeline.py
+   docker exec bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
    ```
    
-This will process all 18 million transaction rows efficiently using Polars, merge them with demographics and financials, train an ensemble of LightGBM models using K-Fold cross validation, and output `submission.csv` ready for uploading.
+This will process all 18 million transaction rows efficiently using Polars, merge them with demographics and financials, train the tree models plus report-only experimental sidecars, and output `submission_stacked.csv`. By default, `submission_stacked.csv` is the public-safe `lgbm + catboost + xgb` stack. Experimental models such as rolling, high-tail, xgb_deep, and band_moe are included in validation reports but cannot overwrite the final upload file unless `ALLOW_EXPERIMENTAL_STACK=1` is set. The upload file contains log-space `np.log1p` predictions as required by Zindi.
+
+Useful switches:
+
+```bash
+docker exec -e RUN_ROLLING=0 -e RUN_HIGHTAIL=0 -e RUN_BAND_MOE=0 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+docker exec -e RUN_SEED_BAG=1 -e SEEDBAG_MODELS=xgb -e SEEDBAG_SEEDS=101,202,303 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+docker exec -e ALLOW_EXPERIMENTAL_STACK=1 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+```
 
 ---
 
@@ -136,4 +145,4 @@ This will process all 18 million transaction rows efficiently using Polars, merg
   ```bash
   python evaluate.py submission.csv data/inputs/PublicReference.csv
   ```
-- **Submission:** Upload your `submission.csv` via the Zindi platform.
+- **Submission:** Upload `submission_stacked.csv` via the Zindi platform. The values must remain in log space.

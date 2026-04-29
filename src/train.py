@@ -4,9 +4,10 @@ import lightgbm as lgb
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
-from pipeline_utils import CAT_COLS
+from pipeline_utils import CAT_COLS, lightgbm_gpu_params, require_nvidia_gpu
 
 def train_model(data_dir='data'):
+    require_nvidia_gpu()
     print("Loading data for training...")
     train = pd.read_csv(os.path.join(data_dir, 'inputs', 'Train.csv'))
     features = pd.read_parquet(os.path.join(data_dir, 'processed', 'all_features.parquet'))
@@ -57,6 +58,7 @@ def train_model(data_dir='data'):
             'verbose': -1,
             'random_state': 42 + fold
         }
+        params.update(lightgbm_gpu_params())
 
         model = lgb.train(
             params,

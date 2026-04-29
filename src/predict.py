@@ -5,11 +5,13 @@ import os
 from pipeline_utils import (
     CAT_COLS,
     list_fold_models,
+    require_nvidia_gpu,
     save_log_predictions,
     write_count_submission,
 )
 
 def generate_predictions(data_dir='data'):
+    require_nvidia_gpu()
     print("Loading test data and features...")
     test = pd.read_csv(os.path.join(data_dir, 'inputs', 'Test.csv'))
     features = pd.read_parquet(os.path.join(data_dir, 'processed', 'all_features.parquet'))

@@ -9,7 +9,9 @@ Usage:
 Example:
     python evaluate.py my_submission.csv PublicReference.csv
 
-The submission CSV must have columns: UniqueID, next_3m_txn_count
+The submission CSV must have columns: UniqueID, next_3m_txn_count.
+For this Zindi challenge, next_3m_txn_count must contain log1p predictions,
+not raw predicted counts.
 """
 
 import sys
@@ -17,13 +19,13 @@ import numpy as np
 import pandas as pd
 
 
-def rmsle(y_true, y_pred):
-    """Root Mean Squared Logarithmic Error."""
+def rmsle_from_log_submission(y_true, y_pred_log):
+    """RMSE on log1p values, matching the Zindi submission format."""
     y_true = np.array(y_true, dtype=np.float64)
-    y_pred = np.array(y_pred, dtype=np.float64)
-    if np.any(y_pred < 0):
-        raise ValueError("Predictions must be non-negative for RMSLE.")
-    return np.sqrt(np.mean((np.log1p(y_pred) - np.log1p(y_true)) ** 2))
+    y_pred_log = np.array(y_pred_log, dtype=np.float64)
+    if np.any(y_pred_log < 0):
+        raise ValueError("Submitted log predictions must be non-negative.")
+    return np.sqrt(np.mean((y_pred_log - np.log1p(y_true)) ** 2))
 
 
 def main():
@@ -59,7 +61,7 @@ def main():
 
     # Check for negative predictions
     if merged['next_3m_txn_count_pred'].min() < 0:
-        print("ERROR: Predictions must be non-negative (RMSLE is undefined for negative values).")
+        print("ERROR: Submitted log predictions must be non-negative.")
         sys.exit(1)
 
     # Check for NaN predictions
@@ -68,8 +70,15 @@ def main():
         print(f"ERROR: {n_nan} NaN values in predictions.")
         sys.exit(1)
 
-    score = rmsle(merged['next_3m_txn_count_true'], merged['next_3m_txn_count_pred'])
-    print(f"RMSLE: {score:.6f}")
+    if merged['next_3m_txn_count_pred'].mean() > 20 or merged['next_3m_txn_count_pred'].max() > 20:
+        print("ERROR: Submission looks like raw counts. Submit np.log1p(y_pred), not raw counts.")
+        sys.exit(1)
+
+    score = rmsle_from_log_submission(
+        merged['next_3m_txn_count_true'],
+        merged['next_3m_txn_count_pred'],
+    )
+    print(f"RMSE on log1p scale / RMSLE equivalent: {score:.6f}")
     print(f"Rows scored: {len(merged)}")
 
 

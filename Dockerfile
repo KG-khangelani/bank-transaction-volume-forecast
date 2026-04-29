@@ -3,6 +3,9 @@ FROM pytorch/pytorch:2.2.1-cuda12.1-cudnn8-runtime
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ocl-icd-libopencl1 \
+    ocl-icd-opencl-dev \
+    opencl-headers \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

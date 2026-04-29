@@ -58,6 +58,7 @@ QUICK START
   4. Optionally join financials_features.parquet and demographics_clean.parquet
   5. Engineer features, train a model, predict for Test customers
   6. Save predictions as CSV with columns: UniqueID, next_3m_txn_count
+     IMPORTANT: Zindi expects np.log1p(predicted_count), not raw counts.
   7. Submit to Zindi
 
   Quick load example (Python):
