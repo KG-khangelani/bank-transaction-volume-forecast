@@ -126,15 +126,18 @@ Ensure you have your data located in `data/inputs/`. Since the repository includ
    docker exec bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
    ```
    
-This will process all 18 million transaction rows efficiently using Polars, merge them with demographics and financials, train the tree models plus report-only experimental sidecars, and output `submission_stacked.csv`. By default, `submission_stacked.csv` is the public-safe `lgbm + catboost + xgb` stack. Experimental models such as rolling, high-tail, xgb_deep, and band_moe are included in validation reports but cannot overwrite the final upload file unless `ALLOW_EXPERIMENTAL_STACK=1` is set. The upload file contains log-space `np.log1p` predictions as required by Zindi.
+This will process all 18 million transaction rows efficiently using Polars, merge them with demographics and financials, train the tree models plus report-only experimental sidecars, and output `submission_stacked.csv`. By default, `submission_stacked.csv` is the public-safe `lgbm + catboost + xgb` stack. Experimental models such as rolling, high-tail, xgb_deep, band_moe, seed bags, and the raw event temporal model are included in validation reports but cannot overwrite the final upload file unless `ALLOW_EXPERIMENTAL_STACK=1` is set. The upload file contains log-space `np.log1p` predictions as required by Zindi.
 
 Useful switches:
 
 ```bash
 docker exec -e RUN_ROLLING=0 -e RUN_HIGHTAIL=0 -e RUN_BAND_MOE=0 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 docker exec -e RUN_SEED_BAG=1 -e SEEDBAG_MODELS=xgb -e SEEDBAG_SEEDS=101,202,303 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+docker exec -e RUN_EVENT_TEMPORAL=1 -e EVENT_BATCH_SIZE=8 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 docker exec -e ALLOW_EXPERIMENTAL_STACK=1 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 ```
+
+`RUN_EVENT_TEMPORAL=1` builds exact recent transaction-event tensors plus pooled older monthly context, trains the GPU GRU event model, writes `oof_event_temporal.csv` and `submission_event_temporal.csv`, then tests `lgbm + catboost + xgb + event_temporal` in stacking. It is off by default because the full 5-fold run is expected to take hours on a 6GB GPU.
 
 ---
 

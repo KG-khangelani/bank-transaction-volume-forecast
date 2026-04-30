@@ -21,7 +21,7 @@ PUBLIC_SAFE_BASELINE_SCENARIO = os.environ.get(
     "lgbm_catboost_xgb",
 )
 ALLOW_EXPERIMENTAL_STACK = os.environ.get("ALLOW_EXPERIMENTAL_STACK", "0") == "1"
-EXPERIMENTAL_MIN_OOF_GAIN = float(os.environ.get("EXPERIMENTAL_MIN_OOF_GAIN", "0.001"))
+EXPERIMENTAL_MIN_OOF_GAIN = float(os.environ.get("EXPERIMENTAL_MIN_OOF_GAIN", "0.002"))
 LOW_BAND_MEAN_TOL = float(os.environ.get("LOW_BAND_MEAN_TOL", "0.02"))
 LOW_BAND_RMSE_TOL = float(os.environ.get("LOW_BAND_RMSE_TOL", "0.005"))
 HIGH_BAND_MEAN_TOL = float(os.environ.get("HIGH_BAND_MEAN_TOL", "0.02"))
@@ -72,6 +72,13 @@ BASE_MODELS = {
         "read_col": "pred_band_moe",
         "oof_path": "data/processed/oof_band_moe.csv",
         "test_path": "data/processed/test_pred_band_moe.csv",
+    },
+    "event_temporal": {
+        "label": "Event temporal",
+        "col": "pred_event_temporal",
+        "read_col": "pred_event_temporal",
+        "oof_path": "data/processed/oof_event_temporal.csv",
+        "test_path": "data/processed/test_pred_event_temporal.csv",
     },
     "xgb_seedbag": {
         "label": "XGBoost seed bag",
@@ -168,6 +175,7 @@ TREE_SCENARIOS = [
 
 EXTRA_TREE_VARIANTS = ["xgb_deep"]
 BAND_MOE_VARIANTS = ["band_moe"]
+EVENT_TEMPORAL_VARIANTS = ["event_temporal"]
 SEEDBAG_VARIANTS = ["xgb_seedbag", "lgbm_seedbag", "catboost_seedbag", "tree_seedbag"]
 PYTORCH_VARIANTS = ["pytorch_both", "pytorch_static_only", "pytorch_sequence_only"]
 HIGHTAIL_VARIANTS = ["hightail"]
@@ -235,6 +243,7 @@ def _build_scenarios():
     hightail_variants = _available_optional_variants(HIGHTAIL_VARIANTS)
     rolling_variants = _available_rolling_variants()
     band_moe_variants = _available_optional_variants(BAND_MOE_VARIANTS)
+    event_temporal_variants = _available_optional_variants(EVENT_TEMPORAL_VARIANTS)
     seedbag_variants = _available_optional_variants(SEEDBAG_VARIANTS)
     tree_base = ["lgbm", "catboost", "xgb"]
 
@@ -250,6 +259,14 @@ def _build_scenarios():
             scenarios.append((
                 "lgbm_catboost_xgb_xgb_deep_band_moe",
                 [*tree_base, "xgb_deep", "band_moe"],
+            ))
+
+    if event_temporal_variants:
+        scenarios.append(("lgbm_catboost_xgb_event_temporal", [*tree_base, "event_temporal"]))
+        if "xgb_deep" in extra_tree_variants:
+            scenarios.append((
+                "lgbm_catboost_xgb_xgb_deep_event_temporal",
+                [*tree_base, "xgb_deep", "event_temporal"],
             ))
 
     for variant in seedbag_variants:
@@ -398,9 +415,13 @@ def _includes_seedbag(model_names):
     return any(name.endswith("_seedbag") for name in model_names)
 
 
+def _includes_event_temporal(model_names):
+    return "event_temporal" in model_names
+
+
 def _includes_experimental(model_names):
     return any(
-        name in {"xgb_deep", "band_moe", "hightail"}
+        name in {"xgb_deep", "band_moe", "hightail", "event_temporal"}
         or name.startswith("rolling_")
         or name.startswith("pytorch_")
         or name.endswith("_seedbag")
@@ -515,6 +536,7 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
             "includes_hightail": bool(result["includes_hightail"]),
             "includes_rolling": bool(result["includes_rolling"]),
             "includes_seedbag": bool(result["includes_seedbag"]),
+            "includes_event_temporal": bool(result["includes_event_temporal"]),
             "improves_baseline_oof": bool(improves_oof),
             "low_band_ok": bool(low_band_ok),
             "high_band_ok": bool(high_band_ok),
@@ -632,6 +654,10 @@ def train_stacking_model():
         print("Banded mixture-of-experts OOF available for experimental validation.")
     else:
         print("No banded mixture-of-experts OOF file found; skipping band_moe stack scenarios.")
+    if _available_optional_variants(EVENT_TEMPORAL_VARIANTS):
+        print("Event temporal OOF available for experimental validation.")
+    else:
+        print("No event temporal OOF file found; skipping event_temporal stack scenarios.")
     if _available_optional_variants(SEEDBAG_VARIANTS):
         labels = ", ".join(BASE_MODELS[name]["label"] for name in _available_optional_variants(SEEDBAG_VARIANTS))
         print(f"Seed-bag variants available for experimental validation: {labels}")
@@ -666,6 +692,7 @@ def train_stacking_model():
             "includes_hightail": _includes_hightail(model_names),
             "includes_rolling": _includes_rolling(model_names),
             "includes_seedbag": _includes_seedbag(model_names),
+            "includes_event_temporal": _includes_event_temporal(model_names),
             "includes_experimental": _includes_experimental(model_names),
         })
         print(f"{scenario_name} | stacked OOF RMSLE: {stack_rmse:.4f}")
@@ -739,6 +766,8 @@ def train_stacking_model():
         primary_path = "submission_stacked_hightail.csv"
     elif _includes_seedbag(selected_models):
         primary_path = "submission_stacked_seedbag.csv"
+    elif _includes_event_temporal(selected_models):
+        primary_path = "submission_stacked_event_temporal.csv"
     elif "band_moe" in selected_models:
         primary_path = "submission_stacked_band_moe.csv"
 

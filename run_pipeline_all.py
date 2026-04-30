@@ -19,6 +19,7 @@ if __name__ == "__main__":
     include_hightail = os.environ.get("RUN_HIGHTAIL", "1") == "1"
     include_band_moe = os.environ.get("RUN_BAND_MOE", "1") == "1"
     include_seedbag = os.environ.get("RUN_SEED_BAG", "0") == "1"
+    include_event_temporal = os.environ.get("RUN_EVENT_TEMPORAL", "0") == "1"
     if include_pytorch:
         os.environ.setdefault("ALLOW_PYTORCH_STACK", "1")
     if include_rolling:
@@ -34,6 +35,8 @@ if __name__ == "__main__":
     
     print("\n--- PHASE 0: Feature Engineering ---")
     run_script("src/features.py")
+    if include_event_temporal:
+        run_script("src/features_event_temporal.py")
     if include_rolling:
         run_script("src/features_rolling.py")
     if include_pytorch:
@@ -48,6 +51,8 @@ if __name__ == "__main__":
         run_script("src/train_band_moe.py")
     if include_seedbag:
         run_script("src/train_seedbag.py")
+    if include_event_temporal:
+        run_script("src/train_event_temporal.py")
     if include_rolling:
         run_script("src/train_rolling.py")
     if include_hightail:
@@ -64,6 +69,8 @@ if __name__ == "__main__":
         run_script("src/predict_band_moe.py")
     if include_seedbag:
         run_script("src/predict_seedbag.py")
+    if include_event_temporal:
+        run_script("src/predict_event_temporal.py")
     if include_rolling:
         run_script("src/predict_rolling.py")
     if include_hightail:
