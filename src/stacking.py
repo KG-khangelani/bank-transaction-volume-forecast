@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import HuberRegressor, Ridge, RidgeCV
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 
 from pipeline_utils import (
     ensure_parent_dir,
@@ -14,6 +13,11 @@ from pipeline_utils import (
     validate_submission,
     write_count_submission,
 )
+from validation import (
+    get_validation_splits,
+    target_band_report as shared_target_band_report,
+    validation_config_row,
+)
 
 
 PUBLIC_SAFE_BASELINE_SCENARIO = os.environ.get(
@@ -21,6 +25,7 @@ PUBLIC_SAFE_BASELINE_SCENARIO = os.environ.get(
     "lgbm_catboost_xgb",
 )
 ALLOW_EXPERIMENTAL_STACK = os.environ.get("ALLOW_EXPERIMENTAL_STACK", "0") == "1"
+ALLOW_VALIDATION_UNPROVEN_STACK = os.environ.get("ALLOW_VALIDATION_UNPROVEN_STACK", "0") == "1"
 EXPERIMENTAL_MIN_OOF_GAIN = float(os.environ.get("EXPERIMENTAL_MIN_OOF_GAIN", "0.002"))
 LOW_BAND_MEAN_TOL = float(os.environ.get("LOW_BAND_MEAN_TOL", "0.02"))
 LOW_BAND_RMSE_TOL = float(os.environ.get("LOW_BAND_RMSE_TOL", "0.005"))
@@ -346,37 +351,36 @@ def _feature_cols(model_names):
     return [BASE_MODELS[name]["col"] for name in model_names]
 
 
-def _evaluate_stack(df, model_names):
+def _evaluate_stack(df, model_names, strategy=None, use_repeats=True):
     cols = _feature_cols(model_names)
     X = df[cols]
     y = np.log1p(df["next_3m_txn_count"])
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
     meta_oof = np.zeros(len(X), dtype=np.float64)
+    counts = np.zeros(len(X), dtype=np.int32)
 
-    for train_idx, val_idx in kf.split(X):
+    folds = get_validation_splits(
+        df,
+        y,
+        n_splits=5,
+        random_state=42,
+        strategy=strategy,
+        use_repeats=use_repeats,
+    )
+    for train_idx, val_idx in folds:
         model = _make_stack_model()
         model.fit(X.iloc[train_idx], y.iloc[train_idx])
-        meta_oof[val_idx] = model.predict(X.iloc[val_idx])
+        meta_oof[val_idx] += model.predict(X.iloc[val_idx])
+        counts[val_idx] += 1
 
+    if np.any(counts == 0):
+        raise ValueError("Stack validation did not produce an OOF prediction for every train row.")
+    meta_oof = meta_oof / counts
     return _rmse(y, meta_oof), np.clip(meta_oof, 0, None)
 
 
 def _target_band_report(df, pred_col, scenario=None):
-    y = np.log1p(df["next_3m_txn_count"].to_numpy(dtype=np.float64))
-    pred = df[pred_col].to_numpy(dtype=np.float64)
-    residual = pred - y
-    rows = []
-    for band, mask_fn in TARGET_BANDS:
-        mask_values = mask_fn(df).to_numpy()
-        rows.append({
-            "scenario": scenario,
-            "target_band": band,
-            "rows": int(mask_values.sum()),
-            "mean_residual_log": float(np.mean(residual[mask_values])) if mask_values.any() else np.nan,
-            "rmse_log": _rmse(y[mask_values], pred[mask_values]) if mask_values.any() else np.nan,
-        })
-    return pd.DataFrame(rows)
+    return shared_target_band_report(df, pred_col, scenario=scenario)
 
 
 def _fit_final_model(df, model_names):
@@ -529,8 +533,10 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
             "scenario": scenario,
             "models": result["models"],
             "rmsle": float(result["rmsle"]),
+            "legacy_oof_rmsle": float(result["legacy_oof_rmsle"]),
             "baseline_rmsle": baseline_rmse,
             "oof_gain_vs_baseline": baseline_rmse - float(result["rmsle"]),
+            **validation_config_row(),
             "includes_experimental": bool(result["includes_experimental"]),
             "includes_pytorch": bool(result["includes_pytorch"]),
             "includes_hightail": bool(result["includes_hightail"]),
@@ -562,8 +568,10 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
     validation_df = pd.DataFrame(rows).sort_values(["submit_worthy", "rmsle"], ascending=[False, True])
     bands_df = pd.concat(band_rows, ignore_index=True)
     validation_df.to_csv("data/processed/stack_candidate_validation.csv", index=False)
+    validation_df.to_csv("data/processed/validation_report.csv", index=False)
     bands_df.to_csv("data/processed/stack_candidate_residual_bands.csv", index=False)
     print("Candidate validation report saved to data/processed/stack_candidate_validation.csv")
+    print("Shared validation report saved to data/processed/validation_report.csv")
     print("Candidate residual bands saved to data/processed/stack_candidate_residual_bands.csv")
     return validation_df
 
@@ -580,6 +588,23 @@ def _select_final_scenario(results_df, validation_df):
             "to let guarded experimental candidates overwrite submission_stacked.csv."
         )
         return baseline.iloc[0]
+
+    if ALLOW_VALIDATION_UNPROVEN_STACK:
+        candidates = validation_df[
+            validation_df["has_test_predictions"]
+            & (
+                validation_df["includes_experimental"]
+                | (validation_df["scenario"] == PUBLIC_SAFE_BASELINE_SCENARIO)
+            )
+        ]
+        if not candidates.empty:
+            selected_name = candidates.sort_values("rmsle").iloc[0]["scenario"]
+            selected = results_df[results_df["scenario"] == selected_name].iloc[0]
+            print(
+                "ALLOW_VALIDATION_UNPROVEN_STACK=1: selecting the best aligned "
+                f"validation candidate ({selected_name}) even if a guard failed."
+            )
+            return selected
 
     submit_worthy = validation_df[
         validation_df["submit_worthy"]
@@ -610,6 +635,7 @@ def _write_manifest(selected, models, output_path, submission_df, validation_df)
         "local_oof_rmsle": float(selected["rmsle"]),
         "public_score": KNOWN_PUBLIC_SCORES.get(selected["scenario"], np.nan),
         "allow_experimental_stack": ALLOW_EXPERIMENTAL_STACK,
+        "allow_validation_unproven_stack": ALLOW_VALIDATION_UNPROVEN_STACK,
         "includes_experimental": bool(selected["includes_experimental"]),
         "submit_worthy": submit_worthy,
         "rows": int(len(submission_df)),
@@ -682,12 +708,20 @@ def train_stacking_model():
             base_rmse = _rmse(y, df[meta["col"]])
             print(f"{scenario_name} | {meta['label']} OOF RMSLE: {base_rmse:.4f}")
 
-        stack_rmse, stack_oof = _evaluate_stack(df, model_names)
+        legacy_rmse, _ = _evaluate_stack(
+            df,
+            model_names,
+            strategy="legacy_kfold",
+            use_repeats=False,
+        )
+        stack_rmse, stack_oof = _evaluate_stack(df, model_names, use_repeats=True)
         scenario_oof[scenario_name] = stack_oof
         results.append({
             "scenario": scenario_name,
             "models": ",".join(model_names),
             "rmsle": stack_rmse,
+            "legacy_oof_rmsle": legacy_rmse,
+            **validation_config_row(),
             "includes_pytorch": _includes_pytorch(model_names),
             "includes_hightail": _includes_hightail(model_names),
             "includes_rolling": _includes_rolling(model_names),
@@ -695,7 +729,8 @@ def train_stacking_model():
             "includes_event_temporal": _includes_event_temporal(model_names),
             "includes_experimental": _includes_experimental(model_names),
         })
-        print(f"{scenario_name} | stacked OOF RMSLE: {stack_rmse:.4f}")
+        print(f"{scenario_name} | legacy stacked OOF RMSLE: {legacy_rmse:.4f}")
+        print(f"{scenario_name} | aligned stacked OOF RMSLE: {stack_rmse:.4f}")
 
     results_df = pd.DataFrame(results).sort_values("rmsle").reset_index(drop=True)
     validation_df = _build_candidate_validation_report(train, scenario_models, results_df, scenario_oof)

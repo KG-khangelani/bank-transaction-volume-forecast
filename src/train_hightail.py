@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 
 from pipeline_utils import CAT_COLS, fit_category_maps, require_nvidia_gpu
+from validation import get_validation_splits, target_band_report, validate_fold_partition
 
 
 MODEL_DIR = "models/hightail"
@@ -44,30 +44,6 @@ def _xgb_params(objective, fold):
             "learning_rate": 0.02,
         })
     return params
-
-
-def _target_band_report(df, pred_col):
-    y_log = np.log1p(df["next_3m_txn_count"].to_numpy(dtype=np.float64))
-    residual = df[pred_col].to_numpy(dtype=np.float64) - y_log
-    bands = [
-        ("<20", df["next_3m_txn_count"] < 20),
-        ("20-74", (df["next_3m_txn_count"] >= 20) & (df["next_3m_txn_count"] < 75)),
-        ("75-199", (df["next_3m_txn_count"] >= 75) & (df["next_3m_txn_count"] < 200)),
-        ("200-499", (df["next_3m_txn_count"] >= 200) & (df["next_3m_txn_count"] < 500)),
-        ("500+", df["next_3m_txn_count"] >= 500),
-    ]
-    rows = []
-    for band, mask in bands:
-        band_residual = residual[mask.to_numpy()]
-        band_y = y_log[mask.to_numpy()]
-        band_pred = df.loc[mask, pred_col].to_numpy(dtype=np.float64)
-        rows.append({
-            "target_band": band,
-            "rows": int(mask.sum()),
-            "mean_residual_log": float(np.mean(band_residual)) if len(band_residual) else np.nan,
-            "rmse_log": float(_rmse(band_y, band_pred)) if len(band_residual) else np.nan,
-        })
-    return pd.DataFrame(rows)
 
 
 def train_hightail_model(data_dir="data"):
@@ -119,13 +95,14 @@ def train_hightail_model(data_dir="data"):
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(df, y_log, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(df))
     oof_general = np.zeros(len(df), dtype=np.float64)
     oof_high = np.zeros(len(df), dtype=np.float64)
     oof_prob_high = np.zeros(len(df), dtype=np.float64)
     oof_blend = np.zeros(len(df), dtype=np.float64)
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y_log)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         print(f"--- Fold {fold + 1} ---")
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y_log[train_idx], y_log[val_idx]
@@ -204,7 +181,7 @@ def train_hightail_model(data_dir="data"):
     oof_df.to_csv(oof_path, index=False)
     print(f"OOF predictions saved to {oof_path}")
 
-    report_df = _target_band_report(
+    report_df = target_band_report(
         pd.concat([df[["UniqueID", "next_3m_txn_count"]], oof_df[["pred_hightail"]]], axis=1),
         "pred_hightail",
     )

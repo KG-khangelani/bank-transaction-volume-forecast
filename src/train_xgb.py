@@ -1,11 +1,11 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
 import joblib
 from pipeline_utils import CAT_COLS, fit_category_maps, require_nvidia_gpu
+from validation import get_validation_splits, validate_fold_partition
 
 def train_xgboost(data_dir='data'):
     require_nvidia_gpu()
@@ -29,7 +29,8 @@ def train_xgboost(data_dir='data'):
 
     print(f"Training XGBoost model on {len(X)} rows and {len(feature_cols)} features...")
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(df, y, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(df))
     oof_preds = np.zeros(len(X))
 
     params = {
@@ -54,7 +55,7 @@ def train_xgboost(data_dir='data'):
         os.path.join(data_dir, 'processed', 'xgb_preprocessor.joblib'),
     )
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         X_train, y_train = X[train_idx], y[train_idx]
         X_val, y_val = X[val_idx], y[val_idx]
 

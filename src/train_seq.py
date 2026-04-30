@@ -6,11 +6,11 @@ import numpy as np
 import joblib
 import os
 import random
-from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from model_seq import TransactionSequenceModel
 from pipeline_utils import CAT_COLS, SEQUENCE_LENGTH, require_torch_cuda
+from validation import get_validation_splits, validate_fold_partition
 
 
 def set_seed(seed):
@@ -118,13 +118,15 @@ def train_pytorch(epochs=150, batch_size=256, input_mode=None):
     
     uids, seq_data, static_data, targets, vocab_sizes, num_static_features = load_data()
     
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    validation_df = pd.DataFrame({"UniqueID": uids})
+    folds = get_validation_splits(validation_df, targets, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(uids))
     oof_preds = np.zeros(len(uids))
     
     os.makedirs('models', exist_ok=True)
     mode_suffix = '' if input_mode == 'both' else f'_{input_mode}'
     
-    for fold, (train_idx, val_idx) in enumerate(kf.split(uids)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         set_seed(42 + fold)
         print(f"--- Fold {fold+1} ---")
         train_dataset = TransactionDataset(

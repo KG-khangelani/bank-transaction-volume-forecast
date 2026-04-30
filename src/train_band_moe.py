@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 
 from pipeline_utils import CAT_COLS, fit_category_maps, require_nvidia_gpu
+from validation import get_validation_splits, target_band_report, validate_fold_partition
 
 
 MODEL_DIR = "models/band_moe"
@@ -76,29 +76,6 @@ def _predict_class_probs(model, matrix):
     return probs / row_sums
 
 
-def _target_band_report(df, pred_col):
-    y_log = np.log1p(df["next_3m_txn_count"].to_numpy(dtype=np.float64))
-    pred = df[pred_col].to_numpy(dtype=np.float64)
-    residual = pred - y_log
-    masks = [
-        df["next_3m_txn_count"] < 20,
-        (df["next_3m_txn_count"] >= 20) & (df["next_3m_txn_count"] < 75),
-        (df["next_3m_txn_count"] >= 75) & (df["next_3m_txn_count"] < 200),
-        (df["next_3m_txn_count"] >= 200) & (df["next_3m_txn_count"] < 500),
-        df["next_3m_txn_count"] >= 500,
-    ]
-    rows = []
-    for band, mask in zip(BAND_NAMES, masks):
-        mask_values = mask.to_numpy()
-        rows.append({
-            "target_band": band,
-            "rows": int(mask_values.sum()),
-            "mean_residual_log": float(np.mean(residual[mask_values])) if mask_values.any() else np.nan,
-            "rmse_log": _rmse(y_log[mask_values], pred[mask_values]) if mask_values.any() else np.nan,
-        })
-    return pd.DataFrame(rows)
-
-
 def _clean_model_dir():
     os.makedirs(MODEL_DIR, exist_ok=True)
     for filename in os.listdir(MODEL_DIR):
@@ -153,10 +130,11 @@ def train_band_moe(data_dir="data"):
             indent=2,
         )
 
-    kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    folds = get_validation_splits(df, y_log, n_splits=N_FOLDS, random_state=42)
+    validate_fold_partition(folds, len(df))
     oof = np.zeros(len(df), dtype=np.float64)
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y_log)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         print(f"--- Band MOE fold {fold + 1} ---")
         X_train, X_val = X[train_idx], X[val_idx]
         y_train_log, y_val_log = y_log[train_idx], y_log[val_idx]
@@ -219,7 +197,7 @@ def train_band_moe(data_dir="data"):
     oof_df.to_csv(OOF_PATH, index=False)
     print(f"OOF predictions saved to {OOF_PATH}")
 
-    report = _target_band_report(
+    report = target_band_report(
         pd.concat([df[["UniqueID", "next_3m_txn_count"]], oof_df[["pred_band_moe"]]], axis=1),
         "pred_band_moe",
     )

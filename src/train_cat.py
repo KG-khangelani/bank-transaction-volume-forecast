@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
 from catboost import CatBoostRegressor, Pool
-from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
 from pipeline_utils import CAT_COLS, require_nvidia_gpu
+from validation import get_validation_splits, validate_fold_partition
 
 def train_catboost(data_dir='data'):
     require_nvidia_gpu()
@@ -31,13 +31,14 @@ def train_catboost(data_dir='data'):
 
     print(f"Training CatBoost model on {len(X)} rows and {len(feature_cols)} features...")
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(df, y, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(df))
     models = []
     oof_preds = np.zeros(len(X))
     
     cat_features = [c for c in CAT_COLS if c in X.columns]
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
         X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
 

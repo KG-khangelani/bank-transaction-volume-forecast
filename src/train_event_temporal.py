@@ -8,12 +8,12 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
 from model_event_temporal import EventTemporalModel
 from pipeline_utils import CAT_COLS, require_torch_cuda
+from validation import get_validation_splits, validate_fold_partition
 
 
 EVENT_DIR = os.environ.get("EVENT_OUTPUT_DIR", "data/processed/event_temporal")
@@ -291,12 +291,13 @@ def train_event_temporal(data_dir="data"):
     oof = np.zeros(len(train_uids), dtype=np.float64)
     uid_to_train_idx = {uid: idx for idx, uid in enumerate(train_uids)}
 
-    kf = KFold(n_splits=fold_count, shuffle=True, random_state=42)
+    folds = get_validation_splits(train, y_log, n_splits=fold_count, random_state=42)
+    validate_fold_partition(folds, len(train))
     rng = np.random.default_rng(42)
     max_train_rows = int(os.environ.get("EVENT_MAX_TRAIN_ROWS", "0"))
     max_val_rows = int(os.environ.get("EVENT_MAX_VAL_ROWS", "0"))
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(train_uids)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         set_seed(4300 + fold)
         val_uids = set(train_uids[val_idx])
         train_pairs = []

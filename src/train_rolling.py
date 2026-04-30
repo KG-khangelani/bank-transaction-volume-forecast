@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 
 from pipeline_utils import CAT_COLS, apply_category_maps, fit_category_maps, require_nvidia_gpu
+from validation import get_validation_splits, validate_fold_partition
 
 
 MODEL_DIR = "models/rolling"
@@ -248,7 +248,9 @@ def train_rolling_models(data_dir="data"):
         raise ValueError("Production rolling feature merge did not preserve all train rows.")
 
     feature_cols = _feature_cols(rolling_train)
-    folds = list(KFold(n_splits=5, shuffle=True, random_state=42).split(train_labels))
+    y_labels = np.log1p(train_labels["next_3m_txn_count"].to_numpy(dtype=np.float64))
+    folds = get_validation_splits(production_train, y_labels, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(train_labels))
     tail_enabled = {
         200: _tail_candidate_enabled(rolling_train, train_labels, folds, 200),
         500: _tail_candidate_enabled(rolling_train, train_labels, folds, 500),

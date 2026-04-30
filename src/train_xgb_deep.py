@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 
 from pipeline_utils import CAT_COLS, fit_category_maps, require_nvidia_gpu
+from validation import get_validation_splits, validate_fold_partition
 
 
 def train_xgboost_deep(data_dir="data"):
@@ -51,10 +51,11 @@ def train_xgboost_deep(data_dir="data"):
         os.path.join(data_dir, "processed", "xgb_deep_preprocessor.joblib"),
     )
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(df, y, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(df))
     oof_preds = np.zeros(len(X), dtype=np.float64)
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         X_train, y_train = X[train_idx], y[train_idx]
         X_val, y_val = X[val_idx], y[val_idx]
 

@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
-from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, log_loss
 import os
+from validation import get_validation_splits, validate_fold_partition
 
 def train_twostage_model(data_dir='data'):
     print("Loading data for Two-Stage training...")
@@ -37,13 +37,14 @@ def train_twostage_model(data_dir='data'):
 
     print(f"Training LightGBM Two-Stage model on {len(X)} rows and {len(feature_cols)} features...")
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(df, y_raw, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(df))
     models_clf = []
     models_dec = []
     models_inc = []
     oof_preds = np.zeros(len(X))
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         X_train, y_train_raw, y_train_dir = X.iloc[train_idx], y_raw.iloc[train_idx], y_dir.iloc[train_idx]
         X_val, y_val_raw, y_val_dir = X.iloc[val_idx], y_raw.iloc[val_idx], y_dir.iloc[val_idx]
 

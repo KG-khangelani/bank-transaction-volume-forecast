@@ -7,10 +7,10 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import optuna
-from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error
 import os
 import json
+from validation import get_validation_splits, validate_fold_partition
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -52,11 +52,12 @@ def objective(trial, X, y, cat_cols):
         'min_split_gain':     trial.suggest_float('min_split_gain',    0.0,   1.0),
     }
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(X, y, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(X))
     oof = np.zeros(len(X))
     valid_cats = [c for c in cat_cols if c in X.columns]
 
-    for train_idx, val_idx in kf.split(X):
+    for train_idx, val_idx in folds:
         dtrain = lgb.Dataset(X.iloc[train_idx], label=y.iloc[train_idx],
                              categorical_feature=valid_cats)
         dval   = lgb.Dataset(X.iloc[val_idx],   label=y.iloc[val_idx],
@@ -100,13 +101,14 @@ def run_study(n_trials=50):
         'objective': 'regression', 'metric': 'rmse', 'verbose': -1,
         **study.best_params
     }
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    folds = get_validation_splits(X, y, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(X))
     oof_preds = np.zeros(len(X))
     valid_cats = [c for c in cat_cols if c in X.columns]
     os.makedirs('models', exist_ok=True)
     models = []
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
+    for fold, (train_idx, val_idx) in enumerate(folds):
         dtrain = lgb.Dataset(X.iloc[train_idx], label=y.iloc[train_idx],
                              categorical_feature=valid_cats)
         dval   = lgb.Dataset(X.iloc[val_idx],   label=y.iloc[val_idx],

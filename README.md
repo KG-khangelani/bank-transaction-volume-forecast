@@ -137,7 +137,27 @@ docker exec -e RUN_EVENT_TEMPORAL=1 -e EVENT_BATCH_SIZE=8 bank-transaction-volum
 docker exec -e ALLOW_EXPERIMENTAL_STACK=1 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 ```
 
+Validation and diagnostics switches:
+
+```bash
+docker exec -e VALIDATION_STRATEGY=stratified_activity -e VALIDATION_REPEATS=1 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+docker exec -e VALIDATION_STRATEGY=legacy_kfold bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+docker exec -e RUN_DIAGNOSTICS=0 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+```
+
+`VALIDATION_STRATEGY` supports `legacy_kfold`, `stratified_activity`, and `rolling_origin`. The default is `stratified_activity`, which stratifies folds by target band plus recent activity/lifecycle signals where those columns are available. `VALIDATION_REPEATS` is used by stack-level validation, while base model training keeps one five-fold partition so the saved fold-model contract remains unchanged. `ALLOW_VALIDATION_UNPROVEN_STACK=1` can override guard failures only when `ALLOW_EXPERIMENTAL_STACK=1` is also set; the default keeps the public-safe `lgbm + catboost + xgb` stack.
+
+When `RUN_DIAGNOSTICS=1` (default), the pipeline writes:
+
+- `data/processed/validation_report.csv`
+- `data/processed/residual_calibration_report.csv`
+- `data/processed/drift_report.csv`
+- `data/processed/anomaly_scores_train.csv`
+- `data/processed/prediction_intervals_oof.csv`
+
 `RUN_EVENT_TEMPORAL=1` builds exact recent transaction-event tensors plus pooled older monthly context, trains the GPU GRU event model, writes `oof_event_temporal.csv` and `submission_event_temporal.csv`, then tests `lgbm + catboost + xgb + event_temporal` in stacking. It is off by default because the full 5-fold run is expected to take hours on a 6GB GPU.
+
+Research scope note: the event-temporal GRU/attention model is the current supported sequence research path. TCNs and larger Transformers are future sequence-model candidates. GNNs are intentionally out of scope until the schema includes graph-worthy merchant, device, counterparty, or other entity-link fields beyond the current customer/account structure.
 
 ---
 

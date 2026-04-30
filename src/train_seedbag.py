@@ -7,7 +7,6 @@ import pandas as pd
 import xgboost as xgb
 from catboost import CatBoostRegressor, Pool
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
 
 from pipeline_utils import (
     CAT_COLS,
@@ -15,6 +14,7 @@ from pipeline_utils import (
     lightgbm_gpu_params,
     require_nvidia_gpu,
 )
+from validation import get_validation_splits, validate_fold_partition
 
 
 MODEL_DIR = "models/seedbag"
@@ -208,7 +208,8 @@ def train_seedbag(data_dir="data"):
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(os.path.join(data_dir, "processed"), exist_ok=True)
     train, df, feature_cols, y = _prepare_data(data_dir)
-    folds = list(KFold(n_splits=5, shuffle=True, random_state=42).split(df, y))
+    folds = get_validation_splits(df, y, n_splits=5, random_state=42)
+    validate_fold_partition(folds, len(df))
 
     metadata = {
         "models": model_names,
