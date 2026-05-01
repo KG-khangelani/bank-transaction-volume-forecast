@@ -14,6 +14,7 @@ if SRC not in sys.path:
 
 from pipeline_utils import validate_submission
 from alignment import add_public_alignment_columns
+from calibration_sweep import blend_predictions
 from public_artifacts import file_sha256, record_submission_artifact
 from validation import get_validation_splits, target_band_report, validate_fold_partition
 
@@ -140,6 +141,14 @@ class ValidationContractTests(unittest.TestCase):
             rewards = pd.read_csv(reward_log)
             self.assertEqual(len(rewards), 1)
             self.assertEqual(rewards.iloc[0]["event_type"], "public_best")
+
+    def test_calibration_blend_stays_log_space_and_clips(self):
+        base = np.array([1.0, 2.0, 3.0])
+        side = np.array([2.0, -1.0, 4.0])
+        blended = blend_predictions(base, side, 0.25)
+        self.assertTrue(np.isfinite(blended).all())
+        self.assertTrue((blended >= 0).all())
+        self.assertTrue(np.allclose(blended, [1.25, 1.25, 3.25]))
 
 
 if __name__ == "__main__":

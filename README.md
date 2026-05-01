@@ -154,6 +154,14 @@ Public leaderboard artifacts are tracked separately from validation scores. When
 docker exec bank-transaction-volume-forecast-jupyter-1 python src/public_artifacts.py --submission submission_stacked.csv --score 0.389532356
 ```
 
+After a full pipeline run, use the calibration sweep to create conservative leaderboard-test candidates without retraining the base models:
+
+```bash
+docker exec bank-transaction-volume-forecast-jupyter-1 python -u src/calibration_sweep.py
+```
+
+The sweep reads existing OOF/test predictions, tests small safe-stack blends with rolling/high-tail/band sidecars, applies cross-fitted residual calibration variants, and ranks candidates by local RMSLE, public-transfer risk, band residual gates, and test-distribution drift. It writes `data/processed/calibration_sweep_report.csv`, `data/processed/calibration_sweep_band_report.csv`, the top ranked submissions under `data/processed/calibration_sweep_submissions/`, and copies the first ranked file to `submission_calibration_best.csv` for convenient upload. Public rewards are still only logged after a submitted score is confirmed with `src/public_artifacts.py`.
+
 When `RUN_DIAGNOSTICS=1` (default), the pipeline writes:
 
 - `data/processed/validation_report.csv`

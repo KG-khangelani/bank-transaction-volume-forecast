@@ -15,6 +15,7 @@ PUBLIC_SUBMISSION_REGISTRY_PATH = "data/processed/submission_public_registry.csv
 BEST_PUBLIC_SUBMISSION_PATH = "submission_best_public.csv"
 LATEST_PUBLIC_SUBMISSION_PATH = "submission_latest_public.csv"
 SCORE_EPS = 1e-12
+CALIBRATION_SWEEP_REPORT_PATH = "data/processed/calibration_sweep_report.csv"
 
 
 def file_sha256(path):
@@ -181,6 +182,54 @@ def _latest_manifest_row(manifest_path):
     return manifest.iloc[-1]
 
 
+def _weight_label(weight):
+    weight = float(weight)
+    if abs(weight - round(weight, 2)) < 1e-12:
+        return f"{weight:.2f}"
+    return f"{weight:.4f}".rstrip("0").rstrip(".")
+
+
+def _calibration_sweep_metadata(submission_path, sweep_report_path=CALIBRATION_SWEEP_REPORT_PATH):
+    if not os.path.exists(sweep_report_path):
+        return {}
+    try:
+        target_hash = file_sha256(submission_path)
+    except FileNotFoundError:
+        return {}
+
+    report = pd.read_csv(sweep_report_path)
+    candidate_paths = []
+    if "submission_path" in report.columns:
+        candidate_paths.extend(
+            str(path) for path in report["submission_path"].dropna().tolist() if str(path).strip()
+        )
+    if os.path.basename(submission_path) == "submission_calibration_best.csv" and candidate_paths:
+        candidate_paths.append(submission_path)
+
+    for path in candidate_paths:
+        if not os.path.exists(path):
+            continue
+        if file_sha256(path) != target_hash:
+            continue
+        match = report[report.get("submission_path", "") == path]
+        if match.empty and path == submission_path:
+            match = report.head(1)
+        if match.empty:
+            continue
+        row = match.iloc[0]
+        candidate = str(row.get("candidate", "")).strip()
+        source = str(row.get("source", "")).strip()
+        models = "lgbm,catboost,xgb"
+        if source:
+            models = f"{models},{source}@{_weight_label(row.get('blend_weight', 0.0))}"
+        return {
+            "scenario": candidate,
+            "models": models,
+            "local_oof_rmsle": _finite_or_nan(row.get("rmsle", np.nan)),
+        }
+    return {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Record and pin a Zindi public submission artifact.")
     parser.add_argument("--submission", default="submission_stacked.csv")
@@ -195,6 +244,11 @@ def main():
     scenario = args.scenario
     models = args.models
     local_oof_rmsle = args.local_oof_rmsle
+    calibration_meta = _calibration_sweep_metadata(args.submission)
+    scenario = scenario or calibration_meta.get("scenario", "")
+    models = models or calibration_meta.get("models", "")
+    if not np.isfinite(local_oof_rmsle) and calibration_meta:
+        local_oof_rmsle = _finite_or_nan(calibration_meta.get("local_oof_rmsle", np.nan))
     best_known_public_score = args.best_known_public_score
     if os.path.exists(args.manifest):
         latest = _latest_manifest_row(args.manifest)
