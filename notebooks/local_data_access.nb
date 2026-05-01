@@ -1,0 +1,27 @@
+(* Content-type: application/vnd.wolfram.mathematica *)
+
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
+
+Notebook[{
+Cell["Bank Transaction Volume Forecast", "Title"],
+Cell["Local Data Access", "Section"],
+Cell["Run these cells first. They load the local repo file map and verify that Mathematica can see the required files under H:\\hikrepos\\bank-transaction-volume-forecast\\data\\inputs.", "Text"],
+Cell[BoxData[
+ RowBox[{"Get", "[",
+  RowBox[{"FileNameJoin", "[",
+   RowBox[{"{",
+    RowBox[{
+     RowBox[{"NotebookDirectory", "[", "]"}], ",",
+     "\"mathematica_data_setup.wl\""}],
+    "}"}], "]"}], "]"}]], "Input"],
+Cell[BoxData[
+ RowBox[{"VerifyBankForecastFiles", "[", "]"}]], "Input"],
+Cell[BoxData[
+ RowBox[{"SmokeTestBankForecastImports", "[", "]"}]], "Input"],
+Cell["After these checks pass, ask Notebook Assistant for one section at a time using the prompts in docs/mathematica_ai_workflow.md.", "Text"]
+},
+WindowSize->{900, 700},
+WindowMargins->{{Automatic, 200}, {Automatic, 80}},
+StyleDefinitions->"Default.nb"
+]
