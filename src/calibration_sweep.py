@@ -358,25 +358,87 @@ def _rolling_penalty_from_report():
     return float(rolling.max())
 
 
-def _public_feedback_by_hash():
+def _parse_source_from_candidate(candidate_name, models=""):
+    candidate_name = str(candidate_name or "")
+    models = str(models or "")
+    match = re.search(r",([^,@]+)@([0-9]+(?:\.[0-9]+)?)", models)
+    if match:
+        return match.group(1)
+    match = re.match(r"blend_(.+?)_w[0-9]+(?:\.[0-9]+)?(?:_|$)", candidate_name)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _parse_weight_from_candidate(candidate_name, models=""):
+    candidate_name = str(candidate_name or "")
+    models = str(models or "")
+    match = re.search(r"@([0-9]+(?:\.[0-9]+)?)", models)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"_w([0-9]+(?:\.[0-9]+)?)(?:_|$)", candidate_name)
+    if match:
+        return float(match.group(1))
+    return 0.0
+
+
+def _family_from_source(source):
+    source = str(source or "")
+    if source.startswith("rolling"):
+        return "rolling"
+    if source:
+        return source
+    return "tree_safe"
+
+
+def _public_feedback_history():
     if not os.path.exists(PUBLIC_SUBMISSION_REGISTRY_PATH):
-        return {}
+        return []
     registry = pd.read_csv(PUBLIC_SUBMISSION_REGISTRY_PATH)
-    if registry.empty or "source_sha256" not in registry.columns:
-        return {}
-    feedback = {}
+    if registry.empty:
+        return []
     registry["public_score"] = pd.to_numeric(registry.get("public_score"), errors="coerce")
     registry["score_floor_before"] = pd.to_numeric(registry.get("score_floor_before"), errors="coerce")
+    registry["local_oof_rmsle"] = pd.to_numeric(registry.get("local_oof_rmsle"), errors="coerce")
+    feedback = []
     for row in registry.itertuples(index=False):
-        source_hash = str(getattr(row, "source_sha256", "")).strip()
         public_score = getattr(row, "public_score", np.nan)
-        if not source_hash or not np.isfinite(public_score):
+        if not np.isfinite(public_score):
             continue
-        feedback[source_hash] = {
+        candidate = str(getattr(row, "scenario", "")).strip()
+        models = str(getattr(row, "models", "")).strip()
+        source = _parse_source_from_candidate(candidate, models)
+        feedback.append({
+            "source_sha256": str(getattr(row, "source_sha256", "")).strip(),
+            "candidate": candidate,
+            "source": source,
+            "family": _family_from_source(source),
+            "blend_weight": _parse_weight_from_candidate(candidate, models),
             "public_score": float(public_score),
             "score_floor_before": float(getattr(row, "score_floor_before", np.nan)),
+            "local_oof_rmsle": float(getattr(row, "local_oof_rmsle", np.nan)),
             "pinned_best": str(getattr(row, "pinned_best", "")).lower() in {"true", "1"},
-        }
+        })
+    return feedback
+
+
+def _public_feedback_by_hash():
+    feedback = {}
+    for row in _public_feedback_history():
+        source_hash = row.get("source_sha256", "")
+        if not source_hash:
+            continue
+        feedback[source_hash] = row
+    return feedback
+
+
+def _public_feedback_by_candidate():
+    feedback = {}
+    for row in _public_feedback_history():
+        candidate = row.get("candidate", "")
+        if not candidate:
+            continue
+        feedback.setdefault(candidate, []).append(row)
     return feedback
 
 
@@ -390,6 +452,7 @@ def _candidate_family(candidate):
 def _stamp_candidate_hashes(candidates, test):
     ensure_parent_dir(os.path.join(SWEEP_SUBMISSION_DIR, "hash_probe"))
     feedback = _public_feedback_by_hash()
+    scenario_feedback = _public_feedback_by_candidate()
     for candidate in candidates:
         temp_path = os.path.join(
             SWEEP_SUBMISSION_DIR,
@@ -403,6 +466,31 @@ def _stamp_candidate_hashes(candidates, test):
         os.remove(temp_path)
         candidate["submission_sha256"] = candidate_hash
         candidate["public_feedback"] = feedback.get(candidate_hash, {})
+        candidate["public_scenario_feedback"] = scenario_feedback.get(candidate["candidate"], [])
+
+
+def _iter_public_feedback(candidate):
+    seen = set()
+    for feedback in [candidate.get("public_feedback", {})]:
+        if not feedback:
+            continue
+        key = (
+            feedback.get("source_sha256", ""),
+            feedback.get("public_score", np.nan),
+            feedback.get("score_floor_before", np.nan),
+        )
+        seen.add(key)
+        yield feedback
+    for feedback in candidate.get("public_scenario_feedback", []):
+        key = (
+            feedback.get("source_sha256", ""),
+            feedback.get("public_score", np.nan),
+            feedback.get("score_floor_before", np.nan),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        yield feedback
 
 
 def _family_penalty_per_weight(candidates, y_log, baseline_rmsle):
@@ -414,24 +502,22 @@ def _family_penalty_per_weight(candidates, y_log, baseline_rmsle):
     }
     learned = {}
     for candidate in candidates:
-        feedback = candidate.get("public_feedback", {})
-        if not feedback:
-            continue
         blend_weight = float(candidate.get("blend_weight", 0.0) or 0.0)
         if blend_weight <= 0:
             continue
-        public_score = feedback.get("public_score", np.nan)
-        score_floor = feedback.get("score_floor_before", np.nan)
-        if not np.isfinite(public_score) or not np.isfinite(score_floor):
-            continue
         candidate_rmsle = rmse(y_log, candidate["oof"])
-        local_delta = candidate_rmsle - baseline_rmsle
-        public_delta = float(public_score) - float(score_floor)
-        transfer_gap = public_delta - local_delta
-        per_weight = max(0.0, transfer_gap) / blend_weight
-        if np.isfinite(per_weight):
-            family = _candidate_family(candidate)
-            learned[family] = max(learned.get(family, 0.0), per_weight)
+        for feedback in _iter_public_feedback(candidate):
+            public_score = feedback.get("public_score", np.nan)
+            score_floor = feedback.get("score_floor_before", np.nan)
+            if not np.isfinite(public_score) or not np.isfinite(score_floor):
+                continue
+            local_delta = candidate_rmsle - baseline_rmsle
+            public_delta = float(public_score) - float(score_floor)
+            transfer_gap = public_delta - local_delta
+            per_weight = max(0.0, transfer_gap) / blend_weight
+            if np.isfinite(per_weight):
+                family = _candidate_family(candidate)
+                learned[family] = max(learned.get(family, 0.0), per_weight)
 
     for family, value in learned.items():
         penalties[family] = max(penalties.get(family, EXPERIMENTAL_BLEND_PENALTY), value)
@@ -444,8 +530,13 @@ def _public_local_search_guidance(candidates):
     for candidate in candidates:
         source = str(candidate.get("source", ""))
         blend_weight = float(candidate.get("blend_weight", 0.0) or 0.0)
-        feedback = candidate.get("public_feedback", {})
-        public_score = feedback.get("public_score", np.nan)
+        feedbacks = list(_iter_public_feedback(candidate))
+        if not feedbacks:
+            continue
+        public_score = min(
+            (row.get("public_score", np.nan) for row in feedbacks),
+            default=np.nan,
+        )
         if not source or blend_weight <= 0 or not np.isfinite(public_score):
             continue
         by_source.setdefault(source, []).append({
@@ -825,6 +916,18 @@ def run_calibration_sweep(data_dir="data"):
         )
         candidate_hash = candidate.get("submission_sha256", "")
         feedback = candidate.get("public_feedback", {})
+        scenario_feedback = list(candidate.get("public_scenario_feedback", []))
+        scenario_scores = [
+            row.get("public_score", np.nan)
+            for row in scenario_feedback
+            if np.isfinite(row.get("public_score", np.nan))
+        ]
+        best_scenario_feedback = {}
+        if scenario_scores:
+            best_scenario_feedback = min(
+                scenario_feedback,
+                key=lambda row: row.get("public_score", np.inf),
+            )
         row.update({
             "submission_sha256": candidate_hash,
             "public_submitted": bool(feedback),
@@ -835,6 +938,14 @@ def run_calibration_sweep(data_dir="data"):
                 else feedback["public_score"] - feedback["score_floor_before"]
             ),
             "observed_public_pinned_best": bool(feedback.get("pinned_best", False)),
+            "scenario_public_observations": len(scenario_feedback),
+            "best_scenario_public_score": best_scenario_feedback.get("public_score", 0.0),
+            "best_scenario_public_delta_vs_score_floor": (
+                0.0
+                if not best_scenario_feedback
+                or not np.isfinite(best_scenario_feedback.get("score_floor_before", np.nan))
+                else best_scenario_feedback["public_score"] - best_scenario_feedback["score_floor_before"]
+            ),
         })
         rows.append(row)
         band_rows.append(bands)

@@ -203,17 +203,12 @@ def _calibration_sweep_metadata(submission_path, sweep_report_path=CALIBRATION_S
         candidate_paths.extend(
             str(path) for path in report["submission_path"].dropna().tolist() if str(path).strip()
         )
-    if os.path.basename(submission_path) == "submission_calibration_best.csv" and candidate_paths:
-        candidate_paths.append(submission_path)
-
     for path in candidate_paths:
         if not os.path.exists(path):
             continue
         if file_sha256(path) != target_hash:
             continue
         match = report[report.get("submission_path", "") == path]
-        if match.empty and path == submission_path:
-            match = report.head(1)
         if match.empty:
             continue
         row = match.iloc[0]

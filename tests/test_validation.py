@@ -14,8 +14,10 @@ if SRC not in sys.path:
 
 from pipeline_utils import validate_submission
 from alignment import add_public_alignment_columns
+import calibration_sweep
 from calibration_sweep import blend_predictions
 from public_artifacts import file_sha256, record_submission_artifact
+from train_rolling import make_final_window_supervised_rows, _count_training_rows
 from validation import get_validation_splits, target_band_report, validate_fold_partition
 
 
@@ -149,6 +151,55 @@ class ValidationContractTests(unittest.TestCase):
         self.assertTrue(np.isfinite(blended).all())
         self.assertTrue((blended >= 0).all())
         self.assertTrue(np.allclose(blended, [1.25, 1.25, 3.25]))
+
+    def test_public_feedback_is_available_by_scenario_after_hash_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = os.path.join(tmp, "registry.csv")
+            pd.DataFrame({
+                "scenario": ["blend_rolling_tail200_w0.15"],
+                "models": ["lgbm,catboost,xgb,rolling_tail200@0.15"],
+                "local_oof_rmsle": [0.3770],
+                "public_score": [0.3889],
+                "score_floor_before": [0.3886],
+                "source_sha256": ["old_hash"],
+                "pinned_best": [False],
+            }).to_csv(registry, index=False)
+
+            previous = calibration_sweep.PUBLIC_SUBMISSION_REGISTRY_PATH
+            calibration_sweep.PUBLIC_SUBMISSION_REGISTRY_PATH = registry
+            try:
+                feedback = calibration_sweep._public_feedback_by_candidate()
+            finally:
+                calibration_sweep.PUBLIC_SUBMISSION_REGISTRY_PATH = previous
+
+        rows = feedback["blend_rolling_tail200_w0.15"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "rolling_tail200")
+        self.assertEqual(rows[0]["family"], "rolling")
+        self.assertAlmostEqual(rows[0]["blend_weight"], 0.15)
+
+    def test_final_window_rows_supply_count_targets_only(self):
+        production_train = pd.DataFrame({
+            "UniqueID": ["a", "b", "c"],
+            "next_3m_txn_count": [19, 200, 501],
+            "txn_count_m1": [1, 2, 3],
+        })
+        supervised = make_final_window_supervised_rows(production_train)
+        self.assertEqual(supervised["source_row_type"].unique().tolist(), ["final_window_train"])
+        self.assertEqual(supervised["future_txn_count"].tolist(), [19, 200, 501])
+        self.assertEqual(supervised["future_high_tail_200"].tolist(), [0, 1, 1])
+        self.assertEqual(supervised["future_high_tail_500"].tolist(), [0, 0, 1])
+        self.assertTrue(supervised["future_active_days"].isna().all())
+
+        historical = pd.DataFrame({
+            "UniqueID": ["h"],
+            "future_txn_count": [10],
+            "future_high_tail_200": [0],
+            "future_high_tail_500": [0],
+        })
+        combined = _count_training_rows(historical, supervised)
+        self.assertEqual(len(combined), 4)
+        self.assertEqual(combined["future_txn_count"].tolist(), [10, 19, 200, 501])
 
 
 if __name__ == "__main__":

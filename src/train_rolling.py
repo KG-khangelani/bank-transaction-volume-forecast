@@ -17,6 +17,7 @@ MIN_SPECIALIST_ROWS = int(os.getenv("ROLLING_MIN_SPECIALIST_ROWS", "25"))
 NUM_BOOST_ROUND = int(os.getenv("ROLLING_NUM_BOOST_ROUND", "3000"))
 FINAL_NUM_BOOST_ROUND = int(os.getenv("ROLLING_FINAL_ROUNDS", "1200"))
 EARLY_STOPPING_ROUNDS = int(os.getenv("ROLLING_EARLY_STOPPING_ROUNDS", "100"))
+USE_FINAL_WINDOW_SUPERVISION = os.getenv("ROLLING_USE_FINAL_WINDOW_SUPERVISION", "1") == "1"
 
 NON_FEATURE_COLS = {
     "UniqueID",
@@ -73,6 +74,39 @@ def _xgb_params(objective, seed):
 
 def _feature_cols(df):
     return [col for col in df.columns if col not in NON_FEATURE_COLS]
+
+
+def make_final_window_supervised_rows(production_train):
+    """Attach final-window count labels to production-cutoff train rows."""
+    required = {"UniqueID", "next_3m_txn_count"}
+    missing = required - set(production_train.columns)
+    if missing:
+        raise ValueError(f"Production train rows are missing required columns: {sorted(missing)}")
+
+    rows = production_train.copy()
+    target = rows["next_3m_txn_count"].to_numpy(dtype=np.float64)
+    if not np.isfinite(target).all():
+        raise ValueError("Final-window train labels contain non-finite values.")
+
+    rows["future_txn_count"] = target
+    rows["future_high_tail_200"] = (target >= 200).astype(np.int8)
+    rows["future_high_tail_500"] = (target >= 500).astype(np.int8)
+    # Train.csv only exposes the final count target, not future active-day targets.
+    rows["future_active_days"] = np.nan
+    rows["future_txns_per_active_day"] = np.nan
+    rows["source_row_type"] = "final_window_train"
+    return rows
+
+
+def _count_training_rows(historical_rows, final_window_rows=None):
+    if final_window_rows is None or len(final_window_rows) == 0:
+        return historical_rows.reset_index(drop=True)
+    return pd.concat(
+        [historical_rows, final_window_rows],
+        axis=0,
+        ignore_index=True,
+        sort=False,
+    )
 
 
 def _prepare_matrix(df, feature_cols, category_maps=None, fit=False):
@@ -168,11 +202,16 @@ def _validate_oof(train, pred_log, pred_col):
         raise ValueError(f"{pred_col} contains NaN or infinite predictions.")
 
 
-def _tail_candidate_enabled(rolling_train, train_labels, folds, threshold):
+def _tail_candidate_enabled(rolling_train, train_labels, folds, threshold, final_supervised=None):
     target_col = f"future_high_tail_{threshold}"
     for train_idx, val_idx in folds:
         val_uids = set(train_labels.iloc[val_idx]["UniqueID"])
         fold_train = rolling_train[~rolling_train["UniqueID"].isin(val_uids)]
+        if final_supervised is not None:
+            fold_train = _count_training_rows(
+                fold_train,
+                final_supervised.iloc[train_idx].reset_index(drop=True),
+            )
         high_rows = int(fold_train[target_col].sum())
         if high_rows < MIN_SPECIALIST_ROWS:
             print(
@@ -246,14 +285,25 @@ def train_rolling_models(data_dir="data"):
     production_train = train_labels.merge(rolling_production, on="UniqueID", how="left")
     if len(production_train) != len(train_labels):
         raise ValueError("Production rolling feature merge did not preserve all train rows.")
+    final_supervised = (
+        make_final_window_supervised_rows(production_train)
+        if USE_FINAL_WINDOW_SUPERVISION
+        else None
+    )
+    if final_supervised is not None:
+        print(
+            "Augmenting rolling count/tail models with "
+            f"{len(final_supervised)} final-window supervised rows."
+        )
+        print("Rolling decomposition remains historical-only because final active-day labels are unavailable.")
 
     feature_cols = _feature_cols(rolling_train)
     y_labels = np.log1p(train_labels["next_3m_txn_count"].to_numpy(dtype=np.float64))
     folds = get_validation_splits(production_train, y_labels, n_splits=5, random_state=42)
     validate_fold_partition(folds, len(train_labels))
     tail_enabled = {
-        200: _tail_candidate_enabled(rolling_train, train_labels, folds, 200),
-        500: _tail_candidate_enabled(rolling_train, train_labels, folds, 500),
+        200: _tail_candidate_enabled(rolling_train, train_labels, folds, 200, final_supervised),
+        500: _tail_candidate_enabled(rolling_train, train_labels, folds, 500, final_supervised),
     }
 
     predictions = {
@@ -282,16 +332,23 @@ def train_rolling_models(data_dir="data"):
         print(f"--- Rolling fold {fold + 1} ---")
         val_uids = set(train_labels.iloc[val_idx]["UniqueID"])
         fold_train = rolling_train[~rolling_train["UniqueID"].isin(val_uids)].reset_index(drop=True)
+        fold_final_train = (
+            final_supervised.iloc[train_idx].reset_index(drop=True)
+            if final_supervised is not None
+            else None
+        )
+        fold_count_train = _count_training_rows(fold_train, fold_final_train)
         fold_val = production_train.iloc[val_idx].reset_index(drop=True)
 
-        X_train, category_maps = _prepare_matrix(fold_train, feature_cols, fit=True)
+        X_count_train, category_maps = _prepare_matrix(fold_count_train, feature_cols, fit=True)
+        X_train, _ = _prepare_matrix(fold_train, feature_cols, category_maps=category_maps)
         X_val, _ = _prepare_matrix(fold_val, feature_cols, category_maps=category_maps)
-        y_train_count = fold_train["future_txn_count"].to_numpy(dtype=np.float64)
+        y_count_train = fold_count_train["future_txn_count"].to_numpy(dtype=np.float64)
         y_val_log = np.log1p(fold_val["next_3m_txn_count"].to_numpy(dtype=np.float64))
 
         direct_model, best_round = _train_booster(
-            X_train,
-            np.log1p(y_train_count),
+            X_count_train,
+            np.log1p(y_count_train),
             "reg:squarederror",
             5200 + fold,
             X_val,
@@ -326,18 +383,18 @@ def train_rolling_models(data_dir="data"):
             if not tail_enabled[threshold]:
                 continue
             high_col = f"future_high_tail_{threshold}"
-            y_high = fold_train[high_col].to_numpy(dtype=np.int32)
+            y_high = fold_count_train[high_col].to_numpy(dtype=np.int32)
             high_mask = y_high == 1
             general_model, general_round = _train_booster(
-                X_train,
-                np.log1p(y_train_count),
+                X_count_train,
+                np.log1p(y_count_train),
                 "reg:squarederror",
                 5500 + threshold + fold,
                 X_val,
                 y_val_log,
             )
             classifier_model, classifier_round = _train_booster(
-                X_train,
+                X_count_train,
                 y_high,
                 "binary:logistic",
                 5600 + threshold + fold,
@@ -346,8 +403,8 @@ def train_rolling_models(data_dir="data"):
             )
             val_high_mask = fold_val["next_3m_txn_count"].to_numpy(dtype=np.float64) >= threshold
             specialist_model, specialist_round = _train_booster(
-                X_train[high_mask],
-                np.log1p(y_train_count[high_mask]),
+                X_count_train[high_mask],
+                np.log1p(y_count_train[high_mask]),
                 "reg:squarederror",
                 5700 + threshold + fold,
                 X_val[val_high_mask] if val_high_mask.any() else None,
@@ -368,18 +425,25 @@ def train_rolling_models(data_dir="data"):
     os.makedirs(MODEL_DIR, exist_ok=True)
     _write_oof_artifacts(train_labels, predictions)
 
-    print("Training final rolling sidecar models on all historical rolling rows...")
-    X_all, final_category_maps = _prepare_matrix(rolling_train, feature_cols, fit=True)
-    y_all_count = rolling_train["future_txn_count"].to_numpy(dtype=np.float64)
+    print("Training final rolling sidecar models on aligned supervised rows...")
+    final_count_train = _count_training_rows(rolling_train, final_supervised)
+    X_count_all, final_category_maps = _prepare_matrix(final_count_train, feature_cols, fit=True)
+    X_all, _ = _prepare_matrix(rolling_train, feature_cols, category_maps=final_category_maps)
+    y_all_count = final_count_train["future_txn_count"].to_numpy(dtype=np.float64)
     metadata = {
         "feature_cols": feature_cols,
         "category_maps": final_category_maps,
         "trained_candidates": sorted(predictions.keys()),
         "rounds": {key: _median_round(value) for key, value in round_tracker.items()},
+        "use_final_window_supervision": bool(final_supervised is not None),
+        "historical_training_rows": int(len(rolling_train)),
+        "final_window_supervised_rows": int(0 if final_supervised is None else len(final_supervised)),
+        "count_training_rows": int(len(final_count_train)),
+        "decomposition_uses_final_window_supervision": False,
     }
 
     direct_final = _train_final_booster(
-        X_all,
+        X_count_all,
         np.log1p(y_all_count),
         "reg:squarederror",
         6200,
@@ -409,24 +473,24 @@ def train_rolling_models(data_dir="data"):
         if candidate not in predictions:
             continue
         high_col = f"future_high_tail_{threshold}"
-        y_high = rolling_train[high_col].to_numpy(dtype=np.int32)
+        y_high = final_count_train[high_col].to_numpy(dtype=np.int32)
         high_mask = y_high == 1
         general_final = _train_final_booster(
-            X_all,
+            X_count_all,
             np.log1p(y_all_count),
             "reg:squarederror",
             6500 + threshold,
             metadata["rounds"][f"tail{threshold}_general"],
         )
         classifier_final = _train_final_booster(
-            X_all,
+            X_count_all,
             y_high,
             "binary:logistic",
             6600 + threshold,
             metadata["rounds"][f"tail{threshold}_classifier"],
         )
         specialist_final = _train_final_booster(
-            X_all[high_mask],
+            X_count_all[high_mask],
             np.log1p(y_all_count[high_mask]),
             "reg:squarederror",
             6700 + threshold,
