@@ -3,12 +3,13 @@ import sys
 import re
 import time
 import subprocess
-import google.generativeai as genai
+from google import genai
 
 # Configure this with your actual API key or via environment variable
 api_key = os.environ.get("GEMINI_API_KEY", "AIzaSyBVaV5RERQqE-CcMmIQnRN_k5Bjyfo8qYE")
+client = None
 if api_key:
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
 FEATURES_FILE = "src/features.py"
 FAST_EVAL_FILE = "src/fast_eval.py"
@@ -69,8 +70,15 @@ Please output just the raw python code to inject (without markdown formatting bl
 Make sure indentation is exactly 4 spaces to match the function body.
 """
     try:
-        model = genai.GenerativeModel("gemini-1.5-pro-latest")
-        response = model.generate_content(prompt)
+        if client:
+            response = client.models.generate_content(
+                model="gemini-1.5-pro",
+                contents=prompt
+            )
+        else:
+            print("No client configured.")
+            return None
+            
         text = response.text
         # Clean up markdown if present
         text = re.sub(r"^```python\s*", "", text)
