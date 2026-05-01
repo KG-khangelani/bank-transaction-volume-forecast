@@ -13,3 +13,4 @@ polars
 tqdm
 joblib
 optuna
+google-generativeai
