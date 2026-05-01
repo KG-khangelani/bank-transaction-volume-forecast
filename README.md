@@ -142,14 +142,26 @@ Validation and diagnostics switches:
 ```bash
 docker exec -e VALIDATION_STRATEGY=stratified_activity -e VALIDATION_REPEATS=1 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 docker exec -e VALIDATION_STRATEGY=legacy_kfold bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
+docker exec -e RUN_ALIGNMENT_DIAGNOSTICS=1 -e ADVERSARIAL_HOLDOUT_FRAC=0.20 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 docker exec -e RUN_DIAGNOSTICS=0 bank-transaction-volume-forecast-jupyter-1 python -u run_pipeline_all.py
 ```
 
-`VALIDATION_STRATEGY` supports `legacy_kfold`, `stratified_activity`, and `rolling_origin`. The default is `stratified_activity`, which stratifies folds by target band plus recent activity/lifecycle signals where those columns are available. `VALIDATION_REPEATS` is used by stack-level validation, while base model training keeps one five-fold partition so the saved fold-model contract remains unchanged. `ALLOW_VALIDATION_UNPROVEN_STACK=1` can override guard failures only when `ALLOW_EXPERIMENTAL_STACK=1` is also set; the default keeps the public-safe `lgbm + catboost + xgb` stack.
+`VALIDATION_STRATEGY` supports `legacy_kfold`, `stratified_activity`, and `rolling_origin`. The default is `stratified_activity`, which stratifies folds by target band plus recent activity/lifecycle signals where those columns are available. `VALIDATION_REPEATS` is used by stack-level validation, while base model training keeps one five-fold partition so the saved fold-model contract remains unchanged. `RUN_ALIGNMENT_DIAGNOSTICS=1` adds a train/test adversarial holdout stress score, stack-weight stability diagnostics, and public-transfer calibration from known leaderboard results. Seed-bag and event-temporal stack candidates are ignored unless `RUN_SEED_BAG=1` / `ALLOW_SEED_BAG_STACK=1` or `RUN_EVENT_TEMPORAL=1` / `ALLOW_EVENT_TEMPORAL_STACK=1` is set, which prevents stale optional artifacts from entering a default report. `ALLOW_VALIDATION_UNPROVEN_STACK=1` can override guard failures only when `ALLOW_EXPERIMENTAL_STACK=1` is also set; candidates are sorted by public-calibrated validation score, and the default keeps the public-safe `lgbm + catboost + xgb` stack.
+
+Public leaderboard artifacts are tracked separately from validation scores. When a submitted score is known, `src/public_artifacts.py` records the exact file hash in `data/processed/submission_public_registry.csv`, refreshes `submission_latest_public.csv`, and only replaces `submission_best_public.csv` when the scored file is at least as good as the previous public best. This prevents a worse retrain of the same scenario from silently overwriting the best upload artifact. Public improvements also write a score-reward event to `data/processed/reward_log.csv`: reward points are `round(RMSLE_improvement * 100000)`, with small/solid/major/breakthrough tiers. Validation-time discoveries are summarized separately in `data/processed/validation_reward_report.csv` and only receive report points if they improve the calibrated score while passing the alignment, band, adversarial, and weight-stability gates.
+
+```bash
+docker exec bank-transaction-volume-forecast-jupyter-1 python src/public_artifacts.py --submission submission_stacked.csv --score 0.389532356
+```
 
 When `RUN_DIAGNOSTICS=1` (default), the pipeline writes:
 
 - `data/processed/validation_report.csv`
+- `data/processed/public_alignment_report.csv`
+- `data/processed/submission_public_registry.csv`
+- `data/processed/reward_log.csv`
+- `data/processed/validation_reward_report.csv`
+- `data/processed/stack_weight_stability_report.csv`
 - `data/processed/residual_calibration_report.csv`
 - `data/processed/drift_report.csv`
 - `data/processed/anomaly_scores_train.csv`

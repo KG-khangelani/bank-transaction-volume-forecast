@@ -2,7 +2,7 @@
 
 ## Mission
 
-Research credible ways to move this Zindi bank transaction volume forecast from the current safe public score around `0.3899` toward a public score below `0.35`.
+Research credible ways to move this Zindi bank transaction volume forecast from the current safe public score around `0.3890` toward a public score below `0.35`.
 
 Important wording note: this is an RMSE-style score, so lower is better. The user's phrase "greater than 0.35" means "better than the 0.35 range"; treat the target as `public_score <= 0.35`.
 
@@ -47,15 +47,20 @@ RUN_EVENT_TEMPORAL=1
 Known public-safe tree stack:
 
 - Scenario: `lgbm_catboost_xgb`
-- Local OOF: about `0.3779`
-- Public score: `0.389916456`
+- Best known public score: `0.388992166`
+- Latest fresh retrain public score: `0.389532356`
+- Latest aligned local OOF: about `0.3805`
 - This is the fallback baseline.
+- Lesson: the same scenario name can produce materially different public scores after retraining, so score tracking should distinguish best-known public performance from latest-submission performance.
+- Artifact tracking: `src/public_artifacts.py` records SHA-256 hashes for scored submissions, writes `data/processed/submission_public_registry.csv`, refreshes `submission_latest_public.csv`, and only replaces `submission_best_public.csv` when the scored file improves or ties the current public best.
+- Reward tracking: real public-best improvements append `data/processed/reward_log.csv` with points equal to `round(RMSLE_improvement * 100000)`. Stack validation also writes `data/processed/validation_reward_report.csv`, but report points are only eligible when a candidate improves calibrated validation and passes public-alignment, band, adversarial, and weight-stability gates.
 
 Rolling + xgb_deep experimental stack:
 
 - Local OOF: about `0.3728` to `0.3732`
 - Public score: `0.391326105`
 - Lesson: local OOF improvement did not transfer. Rolling/experimental validation is over-optimistic or misaligned with the public split.
+- Implementation note: the stacker now writes `data/processed/public_alignment_report.csv`, applies a rolling-family public-transfer penalty derived from this known miss, and reports an adversarial train/test holdout RMSLE so the `0.374x` local signal cannot silently outrank the public-safe stack.
 
 Earlier invalid-looking public submissions:
 
@@ -131,6 +136,14 @@ Desired output:
 - Exact split definitions.
 - Metrics to track.
 - Pass/fail rules for public submission candidates.
+
+Current implementation:
+
+- `stratified_activity` remains the default model-training splitter.
+- Stack selection additionally reports a train/test adversarial classifier AUC and evaluates each stack on the most test-like train users within target bands.
+- Known leaderboard results are converted into relative transfer gaps. The known rolling public miss currently penalizes rolling-family candidates before they can be considered submission-worthy.
+- Latest adversarial classifier AUC was about `0.508`, so current train/test covariate separation is weak; the main failure signal is the rolling meta-stack transfer gap rather than a clearly separable test-customer segment.
+- The stacker now writes `data/processed/stack_weight_stability_report.csv` and gates candidates with concentrated rolling/experimental meta-weights. The known-bad rolling-all stack had roughly `0.72` experimental weight share, `0.61` rolling weight share, and much higher coefficient instability than the safe tree stack.
 
 ### 2. Temporal Generalization
 

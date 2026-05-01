@@ -245,6 +245,9 @@ def _drift_report(features, data_dir):
         ascending=[True, False],
         na_position="last",
     )
+    numeric_cols = drift.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols):
+        drift[numeric_cols] = drift[numeric_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     drift.to_csv(DRIFT_PATH, index=False)
     print(f"Train/test drift report saved to {DRIFT_PATH}")
 

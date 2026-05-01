@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -12,6 +13,8 @@ if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
 from pipeline_utils import validate_submission
+from alignment import add_public_alignment_columns
+from public_artifacts import file_sha256, record_submission_artifact
 from validation import get_validation_splits, target_band_report, validate_fold_partition
 
 
@@ -60,6 +63,83 @@ class ValidationContractTests(unittest.TestCase):
         report = target_band_report(df, "pred")
         self.assertEqual(report["target_band"].tolist(), ["<20", "20-74", "75-199", "200-499", "500+"])
         self.assertTrue(np.allclose(report["rmse_log"].fillna(0), 0))
+
+    def test_public_alignment_penalizes_known_rolling_miss(self):
+        report = pd.DataFrame({
+            "scenario": ["lgbm_catboost_xgb", "lgbm_catboost_xgb_rolling_all"],
+            "models": ["lgbm,catboost,xgb", "lgbm,catboost,xgb,rolling_direct"],
+            "rmsle": [0.3800, 0.3740],
+            "baseline_rmsle": [0.3800, 0.3800],
+            "known_public_ok": [True, False],
+            "submit_worthy": [False, False],
+        })
+        models = {
+            "lgbm_catboost_xgb": ["lgbm", "catboost", "xgb"],
+            "lgbm_catboost_xgb_rolling_all": ["lgbm", "catboost", "xgb", "rolling_direct"],
+        }
+        aligned = add_public_alignment_columns(
+            report,
+            models,
+            "lgbm_catboost_xgb",
+            {
+                "lgbm_catboost_xgb": 0.3890,
+                "lgbm_catboost_xgb_rolling_all": 0.3910,
+            },
+        ).set_index("scenario")
+        self.assertGreater(aligned.loc["lgbm_catboost_xgb_rolling_all", "public_transfer_penalty"], 0.006)
+        self.assertLess(aligned.loc["lgbm_catboost_xgb_rolling_all", "public_calibrated_gain_vs_baseline"], 0)
+
+    def test_submission_registry_preserves_best_public_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(tmp, "first.csv")
+            second = os.path.join(tmp, "second.csv")
+            registry = os.path.join(tmp, "registry.csv")
+            reward_log = os.path.join(tmp, "reward_log.csv")
+            best = os.path.join(tmp, "best.csv")
+            latest = os.path.join(tmp, "latest.csv")
+            pd.DataFrame({
+                "UniqueID": ["a", "b", "c"],
+                "next_3m_txn_count": [1.0, 2.0, 3.0],
+            }).to_csv(first, index=False)
+            pd.DataFrame({
+                "UniqueID": ["a", "b", "c"],
+                "next_3m_txn_count": [1.1, 2.1, 3.1],
+            }).to_csv(second, index=False)
+
+            first_row = record_submission_artifact(
+                first,
+                scenario="safe",
+                models="lgbm,xgb",
+                public_score=0.388,
+                best_known_public_score=0.390,
+                registry_path=registry,
+                best_public_path=best,
+                latest_public_path=latest,
+                reward_log_path=reward_log,
+                expected_rows=3,
+            )
+            first_best_hash = file_sha256(best)
+            self.assertTrue(first_row["pinned_best"])
+
+            second_row = record_submission_artifact(
+                second,
+                scenario="safe",
+                models="lgbm,xgb",
+                public_score=0.389,
+                best_known_public_score=0.390,
+                registry_path=registry,
+                best_public_path=best,
+                latest_public_path=latest,
+                reward_log_path=reward_log,
+                expected_rows=3,
+            )
+            self.assertFalse(second_row["pinned_best"])
+            self.assertEqual(file_sha256(best), first_best_hash)
+            self.assertEqual(file_sha256(latest), file_sha256(second))
+
+            rewards = pd.read_csv(reward_log)
+            self.assertEqual(len(rewards), 1)
+            self.assertEqual(rewards.iloc[0]["event_type"], "public_best")
 
 
 if __name__ == "__main__":

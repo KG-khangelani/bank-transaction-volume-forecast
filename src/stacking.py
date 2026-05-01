@@ -6,6 +6,12 @@ import pandas as pd
 from sklearn.linear_model import HuberRegressor, Ridge, RidgeCV
 from sklearn.metrics import mean_squared_error
 
+from alignment import (
+    add_public_alignment_columns,
+    adversarial_stack_score,
+    adversarial_train_test_scores,
+    write_public_alignment_report,
+)
 from pipeline_utils import (
     ensure_parent_dir,
     require_files,
@@ -13,6 +19,8 @@ from pipeline_utils import (
     validate_submission,
     write_count_submission,
 )
+from public_artifacts import file_sha256, record_submission_artifact
+from rewards import write_validation_reward_report
 from validation import (
     get_validation_splits,
     target_band_report as shared_target_band_report,
@@ -32,14 +40,45 @@ LOW_BAND_RMSE_TOL = float(os.environ.get("LOW_BAND_RMSE_TOL", "0.005"))
 HIGH_BAND_MEAN_TOL = float(os.environ.get("HIGH_BAND_MEAN_TOL", "0.02"))
 HIGH_BAND_RMSE_TOL = float(os.environ.get("HIGH_BAND_RMSE_TOL", "0.005"))
 ALLOW_ROLLING_PUBLIC_RETEST = os.environ.get("ALLOW_ROLLING_PUBLIC_RETEST", "0") == "1"
+RUN_ALIGNMENT_DIAGNOSTICS = os.environ.get("RUN_ALIGNMENT_DIAGNOSTICS", "1") == "1"
+REQUIRE_ADVERSARIAL_ALIGNMENT = os.environ.get("REQUIRE_ADVERSARIAL_ALIGNMENT", "1") == "1"
+ADVERSARIAL_HOLDOUT_FRAC = float(os.environ.get("ADVERSARIAL_HOLDOUT_FRAC", "0.20"))
+ADVERSARIAL_RMSE_TOL = float(os.environ.get("ADVERSARIAL_RMSE_TOL", "0.0005"))
+REQUIRE_STACK_WEIGHT_STABILITY = os.environ.get("REQUIRE_STACK_WEIGHT_STABILITY", "1") == "1"
+MAX_STACK_ROLLING_WEIGHT_SHARE = float(os.environ.get("MAX_STACK_ROLLING_WEIGHT_SHARE", "0.50"))
+MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE = float(os.environ.get("MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE", "0.65"))
+MAX_STACK_COEF_INSTABILITY = float(os.environ.get("MAX_STACK_COEF_INSTABILITY", "0.25"))
 PUBLIC_SAFE_SUBMISSION_PATH = os.environ.get(
     "PUBLIC_SAFE_SUBMISSION_PATH",
     "submission_stacked_no_pytorch.csv",
 )
+STACK_WEIGHT_STABILITY_PATH = "data/processed/stack_weight_stability_report.csv"
+STACK_WEIGHT_EPS = 1e-9
+OPTIONAL_PUBLIC_SCORE_COLUMNS = [
+    "known_public_score",
+    "latest_public_score",
+    "latest_public_delta_vs_best",
+    "known_public_delta_vs_baseline",
+    "public_score_gap",
+    "public_transfer_gap_vs_baseline",
+]
 
+# Best known public scores are used for conservative alignment gates. Keep these
+# as best-so-far values, not necessarily the score of the latest retrain.
 KNOWN_PUBLIC_SCORES = {
-    "lgbm_catboost_xgb": 0.389916456,
+    "lgbm_catboost_xgb": 0.388992166,
     "lgbm_catboost_xgb_xgb_deep_rolling_all": 0.391326105,
+}
+
+# Latest submitted public scores are used for run manifests and score tracking.
+LATEST_PUBLIC_SCORES = {
+    "lgbm_catboost_xgb": 0.389532356,
+}
+
+# Public scores are artifact-specific. Only attach a latest score to a newly
+# generated file when its hash matches the uploaded artifact.
+LATEST_PUBLIC_ARTIFACT_HASHES = {
+    "lgbm_catboost_xgb": "b1facac277274131cf0aaed23fd4445ed37b725583a896c7f8108acca8f80801",
 }
 
 BASE_MODELS = {
@@ -242,14 +281,32 @@ def _available_rolling_variants(require_test=False):
     return _available_optional_variants(ROLLING_VARIANTS, require_test=require_test)
 
 
+def _available_event_temporal_variants(require_test=False):
+    if (
+        os.environ.get("ALLOW_EVENT_TEMPORAL_STACK", "0") != "1"
+        and os.environ.get("RUN_EVENT_TEMPORAL", "0") != "1"
+    ):
+        return []
+    return _available_optional_variants(EVENT_TEMPORAL_VARIANTS, require_test=require_test)
+
+
+def _available_seedbag_variants(require_test=False):
+    if (
+        os.environ.get("ALLOW_SEED_BAG_STACK", "0") != "1"
+        and os.environ.get("RUN_SEED_BAG", "0") != "1"
+    ):
+        return []
+    return _available_optional_variants(SEEDBAG_VARIANTS, require_test=require_test)
+
+
 def _build_scenarios():
     scenarios = list(TREE_SCENARIOS)
     extra_tree_variants = _available_optional_variants(EXTRA_TREE_VARIANTS)
     hightail_variants = _available_optional_variants(HIGHTAIL_VARIANTS)
     rolling_variants = _available_rolling_variants()
     band_moe_variants = _available_optional_variants(BAND_MOE_VARIANTS)
-    event_temporal_variants = _available_optional_variants(EVENT_TEMPORAL_VARIANTS)
-    seedbag_variants = _available_optional_variants(SEEDBAG_VARIANTS)
+    event_temporal_variants = _available_event_temporal_variants()
+    seedbag_variants = _available_seedbag_variants()
     tree_base = ["lgbm", "catboost", "xgb"]
 
     if "xgb_deep" in extra_tree_variants:
@@ -351,13 +408,14 @@ def _feature_cols(model_names):
     return [BASE_MODELS[name]["col"] for name in model_names]
 
 
-def _evaluate_stack(df, model_names, strategy=None, use_repeats=True):
+def _evaluate_stack(df, model_names, strategy=None, use_repeats=True, return_diagnostics=False):
     cols = _feature_cols(model_names)
     X = df[cols]
     y = np.log1p(df["next_3m_txn_count"])
 
     meta_oof = np.zeros(len(X), dtype=np.float64)
     counts = np.zeros(len(X), dtype=np.int32)
+    weight_rows = []
 
     folds = get_validation_splits(
         df,
@@ -367,15 +425,24 @@ def _evaluate_stack(df, model_names, strategy=None, use_repeats=True):
         strategy=strategy,
         use_repeats=use_repeats,
     )
-    for train_idx, val_idx in folds:
+    for fold, (train_idx, val_idx) in enumerate(folds):
         model = _make_stack_model()
         model.fit(X.iloc[train_idx], y.iloc[train_idx])
         meta_oof[val_idx] += model.predict(X.iloc[val_idx])
         counts[val_idx] += 1
+        if return_diagnostics and hasattr(model, "coef_"):
+            for col, coef in zip(cols, np.asarray(model.coef_, dtype=np.float64)):
+                weight_rows.append({
+                    "fold": int(fold),
+                    "feature": col,
+                    "coef": float(coef),
+                })
 
     if np.any(counts == 0):
         raise ValueError("Stack validation did not produce an OOF prediction for every train row.")
     meta_oof = meta_oof / counts
+    if return_diagnostics:
+        return _rmse(y, meta_oof), np.clip(meta_oof, 0, None), pd.DataFrame(weight_rows)
     return _rmse(y, meta_oof), np.clip(meta_oof, 0, None)
 
 
@@ -390,6 +457,99 @@ def _fit_final_model(df, model_names):
     model = _make_stack_model(final=True)
     model.fit(X, y)
     return model, cols
+
+
+def _model_name_from_col(col):
+    for name, meta in BASE_MODELS.items():
+        if meta["col"] == col:
+            return name
+    return col
+
+
+def _write_stack_weight_report(rows):
+    if not rows:
+        return pd.DataFrame()
+    report = pd.DataFrame(rows)
+    ensure_parent_dir(STACK_WEIGHT_STABILITY_PATH)
+    report.to_csv(STACK_WEIGHT_STABILITY_PATH, index=False)
+    print(f"Stack weight stability report saved to {STACK_WEIGHT_STABILITY_PATH}")
+    return report
+
+
+def _summarize_stack_weights(scenario, model_names, weight_df):
+    if weight_df.empty:
+        return {
+            "stack_weight_abs_sum": np.nan,
+            "stack_coef_instability": np.nan,
+            "stack_max_abs_weight": np.nan,
+            "stack_rolling_weight_share": np.nan,
+            "stack_experimental_weight_share": np.nan,
+            "stack_negative_weight_count": 0,
+            "stack_dominant_feature": "",
+        }, []
+
+    work = weight_df.copy()
+    work["model_name"] = work["feature"].map(_model_name_from_col)
+    work["is_rolling"] = work["model_name"].str.startswith("rolling_")
+    work["is_public_safe_tree"] = work["model_name"].isin({"lgbm", "catboost", "xgb"})
+    work["is_experimental"] = ~work["is_public_safe_tree"]
+
+    feature_stats = work.groupby(["feature", "model_name"], as_index=False).agg(
+        coef_mean=("coef", "mean"),
+        coef_std=("coef", "std"),
+        coef_min=("coef", "min"),
+        coef_max=("coef", "max"),
+    )
+    feature_stats["coef_std"] = feature_stats["coef_std"].fillna(0.0)
+    feature_stats["abs_coef_mean"] = feature_stats["coef_mean"].abs()
+
+    fold_abs_total = work.assign(abs_coef=work["coef"].abs()).groupby("fold")["abs_coef"].sum()
+    fold_rolling = (
+        work[work["is_rolling"]]
+        .assign(abs_coef=work.loc[work["is_rolling"], "coef"].abs())
+        .groupby("fold")["abs_coef"]
+        .sum()
+    )
+    fold_experimental = (
+        work[work["is_experimental"]]
+        .assign(abs_coef=work.loc[work["is_experimental"], "coef"].abs())
+        .groupby("fold")["abs_coef"]
+        .sum()
+    )
+    rolling_share = (
+        fold_rolling.reindex(fold_abs_total.index, fill_value=0.0) /
+        (fold_abs_total + STACK_WEIGHT_EPS)
+    )
+    experimental_share = (
+        fold_experimental.reindex(fold_abs_total.index, fill_value=0.0) /
+        (fold_abs_total + STACK_WEIGHT_EPS)
+    )
+    denom = float(feature_stats["abs_coef_mean"].sum()) + STACK_WEIGHT_EPS
+    dominant = feature_stats.sort_values("abs_coef_mean", ascending=False).iloc[0]
+    summary = {
+        "stack_weight_abs_sum": float(feature_stats["abs_coef_mean"].sum()),
+        "stack_coef_instability": float(feature_stats["coef_std"].sum() / denom),
+        "stack_max_abs_weight": float(feature_stats["abs_coef_mean"].max()),
+        "stack_rolling_weight_share": float(rolling_share.mean()),
+        "stack_experimental_weight_share": float(experimental_share.mean()),
+        "stack_negative_weight_count": int((feature_stats["coef_mean"] < 0).sum()),
+        "stack_dominant_feature": str(dominant["feature"]),
+    }
+    rows = []
+    for row in feature_stats.itertuples(index=False):
+        rows.append({
+            "scenario": scenario,
+            "models": ",".join(model_names),
+            "feature": row.feature,
+            "model_name": row.model_name,
+            "coef_mean": float(row.coef_mean),
+            "coef_std": float(row.coef_std),
+            "coef_min": float(row.coef_min),
+            "coef_max": float(row.coef_max),
+            "abs_coef_mean": float(row.abs_coef_mean),
+            **summary,
+        })
+    return summary, rows
 
 
 def _make_stack_model(final=False):
@@ -462,11 +622,31 @@ def _scenario_test_distribution(train, scenario_name, model_names):
     }
 
 
+def _finite_report_copy(df):
+    output = df.copy()
+    for col in ["known_public_score", "latest_public_score"]:
+        if col in output.columns:
+            values = pd.to_numeric(output[col], errors="coerce")
+            output[f"has_{col}"] = np.isfinite(values)
+    for col in OPTIONAL_PUBLIC_SCORE_COLUMNS:
+        if col in output.columns:
+            output[col] = pd.to_numeric(output[col], errors="coerce")
+    numeric_cols = output.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols):
+        output[numeric_cols] = (
+            output[numeric_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+    return output
+
+
 def _build_candidate_validation_report(train, scenario_models, results_df, scenario_oof):
     baseline_row = results_df[results_df["scenario"] == PUBLIC_SAFE_BASELINE_SCENARIO]
     if baseline_row.empty:
         raise ValueError(f"Baseline scenario {PUBLIC_SAFE_BASELINE_SCENARIO} was not evaluated.")
     baseline_rmse = float(baseline_row.iloc[0]["rmsle"])
+    baseline_adversarial_rmse = float(baseline_row.iloc[0].get("adversarial_holdout_rmsle", np.nan))
     baseline_df = _load_oof_frame(train, scenario_models[PUBLIC_SAFE_BASELINE_SCENARIO])
     baseline_bands = _target_band_report(
         pd.concat(
@@ -514,11 +694,36 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
         distribution = _scenario_test_distribution(train, scenario, model_names)
         has_test_predictions = bool(distribution)
         known_public_score = KNOWN_PUBLIC_SCORES.get(scenario, np.nan)
+        latest_public_score = LATEST_PUBLIC_SCORES.get(scenario, np.nan)
         baseline_public_score = KNOWN_PUBLIC_SCORES.get(PUBLIC_SAFE_BASELINE_SCENARIO, np.nan)
         known_public_ok = bool(
             np.isnan(known_public_score)
             or np.isnan(baseline_public_score)
             or known_public_score <= baseline_public_score
+        )
+        adversarial_rmsle = float(result.get("adversarial_holdout_rmsle", np.nan))
+        if np.isfinite(baseline_adversarial_rmse) and np.isfinite(adversarial_rmsle):
+            adversarial_gain = baseline_adversarial_rmse - adversarial_rmsle
+            adversarial_ok = bool(
+                adversarial_gain >= -ADVERSARIAL_RMSE_TOL
+                or scenario == PUBLIC_SAFE_BASELINE_SCENARIO
+            )
+        else:
+            adversarial_gain = np.nan
+            adversarial_ok = True
+        rolling_weight_share = float(result.get("stack_rolling_weight_share", np.nan))
+        experimental_weight_share = float(result.get("stack_experimental_weight_share", np.nan))
+        coef_instability = float(result.get("stack_coef_instability", np.nan))
+        weight_stability_ok = bool(
+            scenario == PUBLIC_SAFE_BASELINE_SCENARIO
+            or (
+                (not np.isfinite(rolling_weight_share) or rolling_weight_share <= MAX_STACK_ROLLING_WEIGHT_SHARE)
+                and (
+                    not np.isfinite(experimental_weight_share)
+                    or experimental_weight_share <= MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE
+                )
+                and (not np.isfinite(coef_instability) or coef_instability <= MAX_STACK_COEF_INSTABILITY)
+            )
         )
         rolling_retest_ok = bool(not result["includes_rolling"] or ALLOW_ROLLING_PUBLIC_RETEST)
         submit_worthy = bool(
@@ -528,6 +733,8 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
             and has_test_predictions
             and known_public_ok
             and rolling_retest_ok
+            and (adversarial_ok or not REQUIRE_ADVERSARIAL_ALIGNMENT)
+            and (weight_stability_ok or not REQUIRE_STACK_WEIGHT_STABILITY)
         )
         row = {
             "scenario": scenario,
@@ -537,6 +744,19 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
             "baseline_rmsle": baseline_rmse,
             "oof_gain_vs_baseline": baseline_rmse - float(result["rmsle"]),
             **validation_config_row(),
+            "adversarial_train_test_auc": float(result.get("adversarial_train_test_auc", np.nan)),
+            "adversarial_holdout_rmsle": adversarial_rmsle,
+            "baseline_adversarial_holdout_rmsle": baseline_adversarial_rmse,
+            "adversarial_gain_vs_baseline": adversarial_gain,
+            "adversarial_holdout_rows": int(result.get("adversarial_holdout_rows", 0)),
+            "stack_weight_abs_sum": float(result.get("stack_weight_abs_sum", np.nan)),
+            "stack_coef_instability": float(result.get("stack_coef_instability", np.nan)),
+            "stack_max_abs_weight": float(result.get("stack_max_abs_weight", np.nan)),
+            "stack_rolling_weight_share": float(result.get("stack_rolling_weight_share", np.nan)),
+            "stack_experimental_weight_share": float(result.get("stack_experimental_weight_share", np.nan)),
+            "stack_negative_weight_count": int(result.get("stack_negative_weight_count", 0)),
+            "stack_dominant_feature": str(result.get("stack_dominant_feature", "")),
+            "weight_stability_ok": weight_stability_ok,
             "includes_experimental": bool(result["includes_experimental"]),
             "includes_pytorch": bool(result["includes_pytorch"]),
             "includes_hightail": bool(result["includes_hightail"]),
@@ -548,9 +768,16 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
             "high_band_ok": bool(high_band_ok),
             "has_test_predictions": has_test_predictions,
             "known_public_ok": known_public_ok,
+            "adversarial_ok": bool(adversarial_ok),
             "rolling_retest_ok": rolling_retest_ok,
             "submit_worthy": submit_worthy,
             "known_public_score": known_public_score,
+            "latest_public_score": latest_public_score,
+            "latest_public_delta_vs_best": (
+                np.nan
+                if np.isnan(latest_public_score) or np.isnan(known_public_score)
+                else latest_public_score - known_public_score
+            ),
             "low_band_mean_residual": float(low["mean_residual_log"]),
             "low_band_rmse": float(low["rmse_log"]),
             "high_band_mean_residual": float(high["mean_residual_log"]),
@@ -565,11 +792,41 @@ def _build_candidate_validation_report(train, scenario_models, results_df, scena
             })
         rows.append(row)
 
-    validation_df = pd.DataFrame(rows).sort_values(["submit_worthy", "rmsle"], ascending=[False, True])
+    validation_df = pd.DataFrame(rows)
+    validation_df = add_public_alignment_columns(
+        validation_df,
+        scenario_models,
+        PUBLIC_SAFE_BASELINE_SCENARIO,
+        KNOWN_PUBLIC_SCORES,
+        min_oof_gain=EXPERIMENTAL_MIN_OOF_GAIN,
+    )
+    validation_df["submit_worthy"] = (
+        validation_df["submit_worthy"]
+        & validation_df["public_alignment_ok"]
+        & (validation_df["adversarial_ok"] | (not REQUIRE_ADVERSARIAL_ALIGNMENT))
+        & (validation_df["weight_stability_ok"] | (not REQUIRE_STACK_WEIGHT_STABILITY))
+    )
+    validation_df = validation_df.sort_values(
+        ["submit_worthy", "public_calibrated_rmsle", "rmsle"],
+        ascending=[False, True, True],
+    )
     bands_df = pd.concat(band_rows, ignore_index=True)
-    validation_df.to_csv("data/processed/stack_candidate_validation.csv", index=False)
-    validation_df.to_csv("data/processed/validation_report.csv", index=False)
-    bands_df.to_csv("data/processed/stack_candidate_residual_bands.csv", index=False)
+    write_validation_reward_report(
+        validation_df,
+        PUBLIC_SAFE_BASELINE_SCENARIO,
+    )
+    write_public_alignment_report(
+        validation_df,
+        scenario_models,
+        PUBLIC_SAFE_BASELINE_SCENARIO,
+        KNOWN_PUBLIC_SCORES,
+        min_oof_gain=EXPERIMENTAL_MIN_OOF_GAIN,
+    )
+    finite_validation_df = _finite_report_copy(validation_df)
+    finite_bands_df = _finite_report_copy(bands_df)
+    finite_validation_df.to_csv("data/processed/stack_candidate_validation.csv", index=False)
+    finite_validation_df.to_csv("data/processed/validation_report.csv", index=False)
+    finite_bands_df.to_csv("data/processed/stack_candidate_residual_bands.csv", index=False)
     print("Candidate validation report saved to data/processed/stack_candidate_validation.csv")
     print("Shared validation report saved to data/processed/validation_report.csv")
     print("Candidate residual bands saved to data/processed/stack_candidate_residual_bands.csv")
@@ -592,16 +849,18 @@ def _select_final_scenario(results_df, validation_df):
     if ALLOW_VALIDATION_UNPROVEN_STACK:
         candidates = validation_df[
             validation_df["has_test_predictions"]
+            & validation_df["known_public_ok"]
             & (
                 validation_df["includes_experimental"]
                 | (validation_df["scenario"] == PUBLIC_SAFE_BASELINE_SCENARIO)
             )
         ]
         if not candidates.empty:
-            selected_name = candidates.sort_values("rmsle").iloc[0]["scenario"]
+            sort_col = "public_calibrated_rmsle" if "public_calibrated_rmsle" in candidates.columns else "rmsle"
+            selected_name = candidates.sort_values(sort_col).iloc[0]["scenario"]
             selected = results_df[results_df["scenario"] == selected_name].iloc[0]
             print(
-                "ALLOW_VALIDATION_UNPROVEN_STACK=1: selecting the best aligned "
+                "ALLOW_VALIDATION_UNPROVEN_STACK=1: selecting the best public-calibrated "
                 f"validation candidate ({selected_name}) even if a guard failed."
             )
             return selected
@@ -617,7 +876,8 @@ def _select_final_scenario(results_df, validation_df):
         print("No experimental candidate cleared the validation gate; using public-safe baseline.")
         return baseline.iloc[0]
 
-    selected_name = submit_worthy.sort_values("rmsle").iloc[0]["scenario"]
+    sort_col = "public_calibrated_rmsle" if "public_calibrated_rmsle" in submit_worthy.columns else "rmsle"
+    selected_name = submit_worthy.sort_values(sort_col).iloc[0]["scenario"]
     selected = results_df[results_df["scenario"] == selected_name].iloc[0]
     print(f"ALLOW_EXPERIMENTAL_STACK=1 and {selected_name} cleared the validation gate.")
     return selected
@@ -627,13 +887,24 @@ def _write_manifest(selected, models, output_path, submission_df, validation_df)
     values = submission_df["next_3m_txn_count"].to_numpy(dtype=np.float64)
     validation_row = validation_df[validation_df["scenario"] == selected["scenario"]]
     submit_worthy = False if validation_row.empty else bool(validation_row.iloc[0]["submit_worthy"])
+    submission_hash = file_sha256(output_path)
+    expected_latest_hash = LATEST_PUBLIC_ARTIFACT_HASHES.get(selected["scenario"], "")
+    if expected_latest_hash and submission_hash == expected_latest_hash:
+        latest_public_score = LATEST_PUBLIC_SCORES.get(selected["scenario"], np.nan)
+    else:
+        latest_public_score = np.nan
+    best_known_public_score = KNOWN_PUBLIC_SCORES.get(selected["scenario"], np.nan)
     row = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "file_path": output_path,
         "scenario": selected["scenario"],
         "models": ",".join(models),
         "local_oof_rmsle": float(selected["rmsle"]),
-        "public_score": KNOWN_PUBLIC_SCORES.get(selected["scenario"], np.nan),
+        "submission_sha256": submission_hash,
+        "latest_public_expected_sha256": expected_latest_hash,
+        "public_score": latest_public_score,
+        "best_known_public_score": best_known_public_score,
+        "latest_public_score": latest_public_score,
         "allow_experimental_stack": ALLOW_EXPERIMENTAL_STACK,
         "allow_validation_unproven_stack": ALLOW_VALIDATION_UNPROVEN_STACK,
         "includes_experimental": bool(selected["includes_experimental"]),
@@ -653,6 +924,14 @@ def _write_manifest(selected, models, output_path, submission_df, validation_df)
         manifest = pd.DataFrame([row])
     manifest.to_csv(manifest_path, index=False)
     print(f"Submission manifest updated at {manifest_path}")
+    record_submission_artifact(
+        output_path,
+        scenario=selected["scenario"],
+        models=",".join(models),
+        local_oof_rmsle=float(selected["rmsle"]),
+        public_score=latest_public_score,
+        best_known_public_score=best_known_public_score,
+    )
 
 
 def train_stacking_model():
@@ -664,6 +943,17 @@ def train_stacking_model():
     train = pd.read_csv("data/inputs/Train.csv")
     scenarios = _build_scenarios()
     scenario_models = {scenario_name: model_names for scenario_name, model_names in scenarios}
+    adversarial_train_scores = None
+    adversarial_auc = np.nan
+    if RUN_ALIGNMENT_DIAGNOSTICS:
+        try:
+            adversarial_train_scores, _, adversarial_auc = adversarial_train_test_scores("data")
+            print(
+                "Adversarial train/test classifier AUC: "
+                f"{adversarial_auc:.4f}; using top test-like train rows as a stack stress holdout."
+            )
+        except Exception as exc:
+            print(f"Skipping adversarial alignment diagnostics: {exc}")
 
     if _available_optional_variants(HIGHTAIL_VARIANTS):
         print("High-tail correction OOF available for experimental validation.")
@@ -680,15 +970,27 @@ def train_stacking_model():
         print("Banded mixture-of-experts OOF available for experimental validation.")
     else:
         print("No banded mixture-of-experts OOF file found; skipping band_moe stack scenarios.")
-    if _available_optional_variants(EVENT_TEMPORAL_VARIANTS):
+    if _available_event_temporal_variants():
         print("Event temporal OOF available for experimental validation.")
     else:
-        print("No event temporal OOF file found; skipping event_temporal stack scenarios.")
-    if _available_optional_variants(SEEDBAG_VARIANTS):
-        labels = ", ".join(BASE_MODELS[name]["label"] for name in _available_optional_variants(SEEDBAG_VARIANTS))
+        if _available_optional_variants(EVENT_TEMPORAL_VARIANTS):
+            print(
+                "Event temporal OOF files exist but RUN_EVENT_TEMPORAL=1 or "
+                "ALLOW_EVENT_TEMPORAL_STACK=1 is not set; skipping event_temporal stack scenarios."
+            )
+        else:
+            print("No event temporal OOF file found; skipping event_temporal stack scenarios.")
+    if _available_seedbag_variants():
+        labels = ", ".join(BASE_MODELS[name]["label"] for name in _available_seedbag_variants())
         print(f"Seed-bag variants available for experimental validation: {labels}")
     else:
-        print("No seed-bag OOF files found; skipping seed-bag stack scenarios.")
+        if _available_optional_variants(SEEDBAG_VARIANTS):
+            print(
+                "Seed-bag OOF files exist but RUN_SEED_BAG=1 or "
+                "ALLOW_SEED_BAG_STACK=1 is not set; skipping seed-bag stack scenarios."
+            )
+        else:
+            print("No seed-bag OOF files found; skipping seed-bag stack scenarios.")
     if _available_pytorch_variants():
         labels = ", ".join(BASE_MODELS[name]["label"] for name in _available_pytorch_variants())
         print(f"PyTorch variants available for experimental validation: {labels}")
@@ -699,6 +1001,7 @@ def train_stacking_model():
 
     results = []
     scenario_oof = {}
+    weight_report_rows = []
     for scenario_name, model_names in scenarios:
         df = _load_oof_frame(train, model_names)
         y = np.log1p(df["next_3m_txn_count"])
@@ -714,13 +1017,37 @@ def train_stacking_model():
             strategy="legacy_kfold",
             use_repeats=False,
         )
-        stack_rmse, stack_oof = _evaluate_stack(df, model_names, use_repeats=True)
+        stack_rmse, stack_oof, weight_df = _evaluate_stack(
+            df,
+            model_names,
+            use_repeats=True,
+            return_diagnostics=True,
+        )
+        weight_summary, weight_rows = _summarize_stack_weights(scenario_name, model_names, weight_df)
+        weight_report_rows.extend(weight_rows)
+        adversarial_rmse = np.nan
+        adversarial_rows = 0
+        if adversarial_train_scores is not None:
+            try:
+                adversarial_rmse, adversarial_rows = adversarial_stack_score(
+                    df,
+                    _make_stack_model(),
+                    _feature_cols(model_names),
+                    adversarial_train_scores,
+                    holdout_frac=ADVERSARIAL_HOLDOUT_FRAC,
+                )
+            except Exception as exc:
+                print(f"{scenario_name} | adversarial holdout skipped: {exc}")
         scenario_oof[scenario_name] = stack_oof
         results.append({
             "scenario": scenario_name,
             "models": ",".join(model_names),
             "rmsle": stack_rmse,
             "legacy_oof_rmsle": legacy_rmse,
+            "adversarial_train_test_auc": adversarial_auc,
+            "adversarial_holdout_rmsle": adversarial_rmse,
+            "adversarial_holdout_rows": adversarial_rows,
+            **weight_summary,
             **validation_config_row(),
             "includes_pytorch": _includes_pytorch(model_names),
             "includes_hightail": _includes_hightail(model_names),
@@ -731,7 +1058,16 @@ def train_stacking_model():
         })
         print(f"{scenario_name} | legacy stacked OOF RMSLE: {legacy_rmse:.4f}")
         print(f"{scenario_name} | aligned stacked OOF RMSLE: {stack_rmse:.4f}")
+        if np.isfinite(weight_summary["stack_rolling_weight_share"]):
+            print(
+                f"{scenario_name} | stack experimental weight share: "
+                f"{weight_summary['stack_experimental_weight_share']:.3f}, "
+                f"instability: {weight_summary['stack_coef_instability']:.3f}"
+            )
+        if np.isfinite(adversarial_rmse):
+            print(f"{scenario_name} | adversarial holdout RMSLE: {adversarial_rmse:.4f}")
 
+    _write_stack_weight_report(weight_report_rows)
     results_df = pd.DataFrame(results).sort_values("rmsle").reset_index(drop=True)
     validation_df = _build_candidate_validation_report(train, scenario_models, results_df, scenario_oof)
     selected = _select_final_scenario(results_df, validation_df)
