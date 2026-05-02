@@ -264,6 +264,26 @@ class ValidationContractTests(unittest.TestCase):
         self.assertAlmostEqual(metadata["blend_weight"], 0.255)
         self.assertIn("band_moe@0.255", metadata["models"])
 
+    def test_calibration_ranking_prefers_positive_adjusted_gain_before_public_probe(self):
+        report = pd.DataFrame({
+            "candidate": ["public_probe", "positive_adjusted", "baseline_safe"],
+            "rmsle": [0.3784, 0.3782, 0.3783],
+            "oof_gain_vs_baseline": [-0.0001, 0.0001, 0.0],
+            "public_calibrated_rmsle": [0.37854, 0.37822, 0.3783],
+            "public_calibrated_gain_vs_baseline": [-0.00024, 0.00008, 0.0],
+            "conservative_ok": [False, False, False],
+            "public_local_search_ok": [True, False, False],
+            "public_local_search_distance": [0.002, 999.0, 999.0],
+            "low_band_ok": [True, True, True],
+            "high_band_ok": [True, True, True],
+            "distribution_ok": [True, True, True],
+        })
+
+        ranked = calibration_sweep._rank_sweep_candidates(report)
+
+        self.assertEqual(ranked.iloc[0]["candidate"], "positive_adjusted")
+        self.assertTrue(bool(ranked.iloc[0]["rank_positive_adjusted_gain"]))
+
     def test_final_window_rows_supply_count_targets_only(self):
         production_train = pd.DataFrame({
             "UniqueID": ["a", "b", "c"],

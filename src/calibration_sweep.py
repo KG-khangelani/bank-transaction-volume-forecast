@@ -864,21 +864,7 @@ def _write_submission_files(report, candidates, test):
         shutil.rmtree(SWEEP_SUBMISSION_DIR)
     ensure_parent_dir(os.path.join(SWEEP_SUBMISSION_DIR, "placeholder"))
     candidate_lookup = {candidate["candidate"]: candidate for candidate in candidates}
-    ranked = report.copy()
-    if SKIP_PUBLIC_SUBMITTED and "public_submitted" in ranked.columns:
-        ranked = ranked[~ranked["public_submitted"].astype(bool)].copy()
-    if ranked.empty:
-        ranked = report.copy()
-    ranked = ranked.sort_values(
-        [
-            "conservative_ok",
-            "public_local_search_ok",
-            "public_local_search_distance",
-            "public_calibrated_rmsle",
-            "rmsle",
-        ],
-        ascending=[False, False, True, True, True],
-    ).reset_index(drop=True)
+    ranked = _rank_sweep_candidates(report)
     write_count = min(WRITE_TOP_N, len(ranked))
     written = []
     for rank, row in ranked.head(write_count).iterrows():
@@ -888,21 +874,77 @@ def _write_submission_files(report, candidates, test):
         write_count_submission(test["UniqueID"], candidate["test"], path)
         written.append((row["candidate"], path))
 
+    copied_candidate = ""
     if written:
-        best_candidate, best_path = written[0]
-        shutil.copyfile(best_path, BEST_SWEEP_SUBMISSION_PATH)
-        copied = pd.read_csv(BEST_SWEEP_SUBMISSION_PATH)
-        validate_submission(copied)
-        print(f"Best ranked calibration candidate copied to {BEST_SWEEP_SUBMISSION_PATH}: {best_candidate}")
+        best_row = ranked.iloc[0]
+        should_copy_root = bool(best_row.get("conservative_ok", False)) or bool(
+            best_row.get("rank_positive_adjusted_gain", False)
+        )
+        if should_copy_root:
+            best_candidate, best_path = written[0]
+            shutil.copyfile(best_path, BEST_SWEEP_SUBMISSION_PATH)
+            copied = pd.read_csv(BEST_SWEEP_SUBMISSION_PATH)
+            validate_submission(copied)
+            copied_candidate = best_candidate
+            print(f"Best ranked calibration candidate copied to {BEST_SWEEP_SUBMISSION_PATH}: {best_candidate}")
+        else:
+            print(
+                "No calibration candidate improved the risk-adjusted baseline; "
+                f"ranked files were written under {SWEEP_SUBMISSION_DIR}, but "
+                f"{BEST_SWEEP_SUBMISSION_PATH} was left unchanged."
+            )
 
     if written:
         path_lookup = dict(written)
         report["submission_path"] = report["candidate"].map(path_lookup).fillna("")
-        report["copied_to_root"] = report["candidate"].eq(written[0][0])
+        report["copied_to_root"] = report["candidate"].eq(copied_candidate) if copied_candidate else False
     else:
         report["submission_path"] = ""
         report["copied_to_root"] = False
     return report
+
+
+def _rank_bool_col(df, column, default=False):
+    if column in df.columns:
+        return df[column].fillna(default).astype(bool)
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def _rank_sweep_candidates(report, skip_submitted=None):
+    if skip_submitted is None:
+        skip_submitted = SKIP_PUBLIC_SUBMITTED
+    ranked = report.copy()
+    if skip_submitted and "public_submitted" in ranked.columns:
+        ranked = ranked[~ranked["public_submitted"].astype(bool)].copy()
+    if ranked.empty:
+        ranked = report.copy()
+
+    positive_adjusted_gain = pd.to_numeric(
+        ranked.get("public_calibrated_gain_vs_baseline", 0.0),
+        errors="coerce",
+    ).fillna(0.0) > 0.0
+    positive_oof_gain = pd.to_numeric(
+        ranked.get("oof_gain_vs_baseline", 0.0),
+        errors="coerce",
+    ).fillna(0.0) > 0.0
+    gate_ok = (
+        _rank_bool_col(ranked, "low_band_ok")
+        & _rank_bool_col(ranked, "high_band_ok")
+        & _rank_bool_col(ranked, "distribution_ok")
+    )
+    ranked["rank_positive_adjusted_gain"] = positive_adjusted_gain & positive_oof_gain & gate_ok
+    ranked = ranked.sort_values(
+        [
+            "conservative_ok",
+            "rank_positive_adjusted_gain",
+            "public_calibrated_rmsle",
+            "public_local_search_ok",
+            "public_local_search_distance",
+            "rmsle",
+        ],
+        ascending=[False, False, True, False, True, True],
+    )
+    return ranked.reset_index(drop=True)
 
 
 def run_calibration_sweep(data_dir="data"):
@@ -974,16 +1016,7 @@ def run_calibration_sweep(data_dir="data"):
         rows.append(row)
         band_rows.append(bands)
 
-    report = pd.DataFrame(rows).sort_values(
-        [
-            "conservative_ok",
-            "public_local_search_ok",
-            "public_local_search_distance",
-            "public_calibrated_rmsle",
-            "rmsle",
-        ],
-        ascending=[False, False, True, True, True],
-    ).reset_index(drop=True)
+    report = _rank_sweep_candidates(pd.DataFrame(rows), skip_submitted=False)
     report = _write_submission_files(report, candidates, test)
     band_report = pd.concat(band_rows, ignore_index=True)
 

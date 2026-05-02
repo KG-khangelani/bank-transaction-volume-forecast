@@ -20,6 +20,7 @@ if __name__ == "__main__":
     include_band_moe = os.environ.get("RUN_BAND_MOE", "1") == "1"
     include_seedbag = os.environ.get("RUN_SEED_BAG", "0") == "1"
     include_event_temporal = os.environ.get("RUN_EVENT_TEMPORAL", "0") == "1"
+    include_calibration_sweep = os.environ.get("RUN_CALIBRATION_SWEEP", "1") == "1"
     include_diagnostics = os.environ.get("RUN_DIAGNOSTICS", "1") == "1"
     if include_pytorch:
         os.environ.setdefault("ALLOW_PYTORCH_STACK", "1")
@@ -82,8 +83,12 @@ if __name__ == "__main__":
     print("\n--- PHASE 3: Running Stack Ablations & Generating Final Submission ---")
     run_script("src/stacking.py")
 
+    if include_calibration_sweep:
+        print("\n--- PHASE 4: Running Calibration Sweep ---")
+        run_script("src/calibration_sweep.py")
+
     if include_diagnostics:
-        print("\n--- PHASE 4: Validation, Interval, Anomaly & Drift Diagnostics ---")
+        print("\n--- PHASE 5: Validation, Interval, Anomaly & Drift Diagnostics ---")
         run_script("src/diagnostics.py")
     
     print("\nPipeline completed! The selected stack submission is saved as 'submission_stacked.csv'.")
