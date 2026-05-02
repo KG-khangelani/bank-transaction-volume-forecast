@@ -10,8 +10,8 @@ from validation import get_validation_splits, validate_fold_partition
 from rewards import append_reward_event
 import features
 
-def run_fast_eval(data_dir='data', log_reward=False, baseline_score=None):
-    print("Running fast feature evaluation...")
+def run_fast_eval(data_dir='data', log_reward=False, baseline_score=None, fold_idx=0):
+    print(f"Running fast feature evaluation on Fold {fold_idx}...")
     
     # 1. Generate features in-memory to save disk I/O
     print("Generating features...")
@@ -20,7 +20,7 @@ def run_fast_eval(data_dir='data', log_reward=False, baseline_score=None):
         features_df = features.create_features(data_dir=os.path.join(data_dir, 'inputs')).to_pandas()
     except Exception as e:
         print(f"Error during feature generation: {e}")
-        return float('inf')
+        return float('inf'), []
 
     # 2. Load training targets
     train = pd.read_csv(os.path.join(data_dir, 'inputs', 'Train.csv'))
@@ -36,9 +36,9 @@ def run_fast_eval(data_dir='data', log_reward=False, baseline_score=None):
     X = df[feature_cols]
     y = np.log1p(df['next_3m_txn_count'])
 
-    # 3. Fast 1-Fold Validation (use same splits but only evaluate first fold)
+    # 3. Fast 1-Fold Validation
     folds = get_validation_splits(df, y, n_splits=5, random_state=42)
-    train_idx, val_idx = folds[0]
+    train_idx, val_idx = folds[fold_idx]
     
     X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
     X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
@@ -105,14 +105,22 @@ def run_fast_eval(data_dir='data', log_reward=False, baseline_score=None):
             new_score=fold_rmse
         )
 
-    return fold_rmse
+    # Calculate Feature Importances
+    importances = model.feature_importance(importance_type='gain')
+    feature_names = model.feature_name()
+    fi_df = pd.DataFrame({'feature': feature_names, 'importance': importances})
+    top_features = fi_df.sort_values('importance', ascending=False).head(10)['feature'].tolist()
+    
+    return fold_rmse, top_features
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=float, default=None, help="Baseline RMSLE to compare against")
     parser.add_argument("--log-reward", action="store_true", help="Whether to log the reward")
+    parser.add_argument("--fold", type=int, default=0, help="Validation fold index to evaluate (0-4)")
     args = parser.parse_args()
     
-    score = run_fast_eval(baseline_score=args.baseline, log_reward=args.log_reward)
+    score, top_features = run_fast_eval(baseline_score=args.baseline, log_reward=args.log_reward, fold_idx=args.fold)
+    print(f"TOP_FEATURES={','.join(top_features)}")
     # Output solely the score on the last line for easy parsing
     print(f"FINAL_SCORE={score}")

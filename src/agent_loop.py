@@ -61,30 +61,89 @@ def inject_autogen_block(content, new_block, start_tag, end_tag):
     # Use lambda to avoid issues with backreferences in replacement string
     return re.sub(pattern, lambda m: f"{m.group(1)}{new_block}{m.group(3)}", content, flags=re.DOTALL)
 
-def run_evaluation(baseline_score):
+def run_evaluation(baseline_score, fold_idx=0):
     try:
-        cmd = [sys.executable, FAST_EVAL_FILE, "--baseline", str(baseline_score), "--log-reward"]
+        cmd = [sys.executable, FAST_EVAL_FILE, "--baseline", str(baseline_score), "--log-reward", "--fold", str(fold_idx)]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        # Parse output for FINAL_SCORE
+        
+        score = float("inf")
+        top_features = ""
+        
+        # Parse output for FINAL_SCORE and TOP_FEATURES
         for line in result.stdout.splitlines():
             if line.startswith("FINAL_SCORE="):
-                return float(line.split("=")[1]), ""
+                score = float(line.split("=")[1])
+            elif line.startswith("TOP_FEATURES="):
+                top_features = line.split("=")[1]
+                
+        if score != float("inf"):
+            return score, top_features, ""
+            
         print("Failed to parse FINAL_SCORE from output")
         # Combine stdout and stderr for debugging feedback to the agent
-        return float("inf"), result.stdout + "\n" + result.stderr
+        return float("inf"), "", result.stdout + "\n" + result.stderr
     except Exception as e:
         print(f"Evaluation failed to run: {e}")
-        return float("inf"), str(e)
+        return float("inf"), "", str(e)
 
-def generate_new_code(current_files_state, baseline_score, previous_attempts="", schema=""):
+def execute_analyze_block(code_block):
+    # Create a temporary script to execute the EDA code
+    script_content = f"""
+import os
+import sys
+import pandas as pd
+import numpy as np
+import polars as pl
+sys.path.append('src')
+import features
+
+print("--- Loading Data for Analysis ---")
+data_dir = 'data'
+try:
+    features_df = features.create_features(data_dir=os.path.join(data_dir, 'inputs')).to_pandas()
+    train = pd.read_csv(os.path.join(data_dir, 'inputs', 'Train.csv'))
+    df = train.merge(features_df, on='UniqueID', how='left')
+    
+    # Run the agent's code
+    print("--- Executing Agent Code ---")
+{textwrap.indent(code_block, '    ')}
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+"""
+    temp_script = "temp_eda_run.py"
+    try:
+        with open(temp_script, "w", encoding="utf-8") as f:
+            f.write(script_content)
+        cmd = [sys.executable, temp_script]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        output = result.stdout + "\n" + result.stderr
+        return output
+    except subprocess.TimeoutExpired:
+        return "ERROR: Execution timed out after 60 seconds."
+    except Exception as e:
+        return f"ERROR: Failed to run analyze block: {e}"
+    finally:
+        if os.path.exists(temp_script):
+            os.remove(temp_script)
+
+def generate_new_code(current_files_state, baseline_score, previous_attempts="", schema="", top_features="", is_correction=False):
     if not api_key:
         print("WARNING: GEMINI_API_KEY not set. Generating a dummy feature for testing.")
         return {"src/features.py": 'features = features.with_columns([(pl.col("txn_count_all") * 2).alias("test_autogen_feature")])'}
     
+    correction_prompt = ""
+    if is_correction:
+        correction_prompt = "\nURGENT: Your previous code crashed with an error. Please review the feedback and FIX the code so it runs successfully.\n"
+
+    top_features_prompt = ""
+    if top_features:
+        top_features_prompt = f"\nTop 10 Most Important Features in the Proxy Model:\n{top_features}\nBuild upon these features or create variations of them!\n"
+
     prompt = f"""
 You are an expert data scientist participating in the Zindi Nedbank Transaction Volume Forecasting challenge.
 The target metric is Root Mean Squared Logarithmic Error (RMSLE). Lower is better.
-The current baseline proxy RMSLE score is: {baseline_score:.5f}.
+The current baseline proxy RMSLE score is: {baseline_score:.5f}.{correction_prompt}{top_features_prompt}
 
 The `features` dataframe has the following columns available:
 {schema}
@@ -99,15 +158,36 @@ You have access to inject code into the following files simultaneously:
 
 Note: Only changes to `src/fast_eval.py` and `src/features.py` will impact the immediate proxy RMSLE score. However, you should update the other files to keep their hyperparameters or pipelines aligned with the feature set so the final models benefit.
 
+**Few-Shot Examples for Complex Features:**
+Do not just add columns together. Consider complex temporal features, rolling statistics, and conditional logic. Example:
+```python:src/features.py
+features = features.with_columns([
+    (pl.col("txn_amount_sum_all").rolling_mean(window_size=7).over("UniqueID")).alias("rolling_amount_7d"),
+    ((pl.col("txn_count_all") / (pl.col("txn_count_all").shift(7).over("UniqueID") + 1))).alias("wow_growth_ratio"),
+    pl.when(pl.col("Gender") == "M").then(pl.col("txn_amount_sum_all")).otherwise(0).alias("male_spend")
+])
+```
+
+**DATA AWARENESS (REPL):**
+If you are unsure what features to create, you can run Python code to analyze the data! 
+If you output a code block named `python:analyze`, it will NOT be injected into the repository. Instead, it will be executed in a sandboxed pandas environment (with the merged `df` already loaded), and the output will be returned to you in the next prompt.
+Example EDA script:
+```python:analyze
+print("Correlations with target:")
+print(df.corr(numeric_only=True)['next_3m_txn_count'].sort_values().head(10))
+print(df['Gender'].value_counts())
+```
+If you use an analyze block, do NOT output any other code blocks. Wait for the observation results!
+
 To inject code, you MUST format your response using markdown code blocks with the filename specified right after the language. For example:
 
 ```python:src/features.py
 features = features.with_columns(
-    pl.col("txn_count_all").shift(1).alias("lag_1")
+    pl.col("txn_count_all").shift(1).over("UniqueID").alias("lag_1")
 )
 ```
 
-```python:src/train_xgb.py
+```python:src/fast_eval.py
 params["learning_rate"] = 0.05
 params["max_depth"] = 8
 ```
@@ -115,7 +195,7 @@ params["max_depth"] = 8
 Previous attempts and feedback:
 {previous_attempts}
 
-Please output the code blocks to inject. You do not need to provide blocks for all files, only the ones you wish to change.
+Please output the code blocks to inject or an analyze block. You do not need to provide blocks for all files, only the ones you wish to change.
 """
     try:
         if client:
@@ -137,7 +217,9 @@ Please output the code blocks to inject. You do not need to provide blocks for a
         if matches:
             for filename, code in matches:
                 filename = filename.strip()
-                if filename in TARGET_FILES:
+                if filename == "analyze":
+                    results["analyze"] = code.strip("\n")
+                elif filename in TARGET_FILES:
                     results[filename] = code.strip("\n")
         else:
             # Fallback if the LLM ignores the format and just outputs a python block
@@ -160,6 +242,8 @@ Please output the code blocks to inject. You do not need to provide blocks for a
             
         return None
 
+import random
+
 def main():
     print("Starting Automated Multi-File Engineering Loop...")
     
@@ -172,65 +256,112 @@ def main():
         schema_str = f"Error extracting schema: {e}"
         print(schema_str)
 
-    print("Evaluating current baseline...")
-    baseline_score, _ = run_evaluation(baseline_score=1.0)
-    if baseline_score == float("inf"):
-        print("Failed to get initial baseline. Exiting.")
-        return
+    print("Evaluating current baseline across all folds...")
+    baseline_scores = []
+    current_top_features = ""
+    for f in range(5):
+        score, top_feat, _ = run_evaluation(baseline_score=1.0, fold_idx=f)
+        if score == float("inf"):
+            print("Failed to get initial baseline. Exiting.")
+            return
+        baseline_scores.append(score)
+        current_top_features = top_feat
         
-    print(f"Initial Baseline RMSLE: {baseline_score:.5f}")
+    average_baseline = sum(baseline_scores) / 5
+    print(f"Initial Baselines: {[round(x, 5) for x in baseline_scores]}")
+    print(f"Initial Average Baseline: {average_baseline:.5f}")
+    if current_top_features:
+        print(f"Top initial features: {current_top_features}")
     
-    previous_attempts = ""
+    memory = []
     iteration = 1
     
     while True:
         print(f"\n--- Iteration {iteration} ---")
         current_files_state = read_all_files()
         
+        # Build memory string
+        previous_attempts_str = "\n".join(memory[-10:]) # Keep last 10 attempts
+        
         print("Requesting new code block from LLM...")
-        new_blocks = generate_new_code(current_files_state, baseline_score, previous_attempts, schema=schema_str)
+        new_blocks = generate_new_code(current_files_state, average_baseline, previous_attempts_str, schema_str, current_top_features, is_correction=False)
         
         if not new_blocks:
             print("Failed to generate code, retrying in 10s...")
             time.sleep(10)
             continue
             
+        if "analyze" in new_blocks:
+            print("Executing LLM Data Analysis Block...")
+            output = execute_analyze_block(new_blocks["analyze"])
+            memory.append(f"[OBSERVATION] Analyzed data. Output:\n{output[-1500:]}")
+            continue
+            
         print(f"Generated Code for files: {list(new_blocks.keys())}")
         
-        # Inject into all targeted files
-        updated_files_state = current_files_state.copy()
-        combined_new_code = ""
-        for filepath, new_code in new_blocks.items():
-            combined_new_code += f"\n# {filepath}\n{new_code}\n"
-            start_tag, end_tag = TARGET_FILES[filepath]
-            updated_content = inject_autogen_block(current_files_state[filepath], new_code, start_tag, end_tag)
-            updated_files_state[filepath] = updated_content
+        test_fold = random.randint(0, 4)
+        print(f"Testing features on random Fold {test_fold}...")
+        
+        # Helper to inject and evaluate
+        def try_blocks(blocks, fold_idx):
+            updated_files_state = current_files_state.copy()
+            combined_new_code = ""
+            for filepath, new_code in blocks.items():
+                combined_new_code += f"\n# {filepath}\n{new_code}\n"
+                start_tag, end_tag = TARGET_FILES[filepath]
+                updated_content = inject_autogen_block(current_files_state[filepath], new_code, start_tag, end_tag)
+                updated_files_state[filepath] = updated_content
+            write_all_files(updated_files_state)
+            return run_evaluation(baseline_scores[fold_idx], fold_idx), combined_new_code
             
-        # Write to disk
-        write_all_files(updated_files_state)
+        (new_score, top_features, error_log), combined_new_code = try_blocks(new_blocks, test_fold)
         
-        # Evaluate
-        new_score, error_log = run_evaluation(baseline_score)
+        # Self-correction sub-loop
+        if new_score == float("inf") and error_log:
+            print("Code crashed! Entering self-correction sub-loop...")
+            correction_feedback = previous_attempts_str + f"\nAttempt {iteration}: Added code:\n{combined_new_code}\nResult: CRASHED with error:\n{error_log[-1000:]}\n"
+            corrected_blocks = generate_new_code(current_files_state, average_baseline, correction_feedback, schema_str, current_top_features, is_correction=True)
+            if corrected_blocks and "analyze" not in corrected_blocks:
+                print(f"Trying corrected code for: {list(corrected_blocks.keys())}")
+                # Rollback first
+                write_all_files(current_files_state)
+                (new_score, top_features, error_log), combined_new_code = try_blocks(corrected_blocks, test_fold)
         
-        if new_score < baseline_score:
-            improvement = baseline_score - new_score
-            print(f"SUCCESS! Score improved by {improvement:.5f}. New Baseline: {new_score:.5f}")
-            baseline_score = new_score
-            previous_attempts = f"Attempt {iteration}: Added code. Score improved from {baseline_score + improvement:.5f} to {baseline_score:.5f}.\nCode:\n{combined_new_code}\nKeep building on this!"
+        condensed_code = combined_new_code[:300] + "..." if len(combined_new_code) > 300 else combined_new_code
+
+        if new_score < baseline_scores[test_fold]:
+            print(f"Fold {test_fold} improved! Verifying robustness across all remaining folds...")
+            new_scores = []
+            for f in range(5):
+                if f == test_fold:
+                    new_scores.append(new_score)
+                else:
+                    s, _, _ = run_evaluation(baseline_scores[f], f)
+                    new_scores.append(s)
+            
+            new_average = sum(new_scores) / 5
+            if new_average < average_baseline:
+                improvement = average_baseline - new_average
+                print(f"SUCCESS! Global Average improved by {improvement:.5f}. New Avg Baseline: {new_average:.5f}")
+                baseline_scores = new_scores
+                average_baseline = new_average
+                current_top_features = top_features
+                memory.append(f"[SUCCESS] Attempt {iteration}: Global Avg improved from {average_baseline + improvement:.5f} to {average_baseline:.5f}. Code:\n{condensed_code}")
+            else:
+                print(f"OVERFIT DETECTED! Fold {test_fold} improved but Global Average degraded. Rejecting.")
+                write_all_files(current_files_state)
+                memory.append(f"[OVERFIT] Attempt {iteration}: Improved Fold {test_fold} but degraded overall. Snippet:\n{condensed_code}")
         else:
-            degradation = new_score - baseline_score
-            print(f"FAILED. Score degraded by {degradation:.5f}. Reverting ALL files.")
+            degradation = new_score - baseline_scores[test_fold]
+            print(f"FAILED. Fold {test_fold} degraded by {degradation:.5f}. Reverting ALL files.")
             # Atomic rollback
             write_all_files(current_files_state)
             
             error_feedback = ""
             if error_log:
-                error_feedback = f"\nThe code caused an ERROR during evaluation:\n{error_log[-500:]}\n"
+                error_feedback = f" ERROR:\n{error_log[-300:]}\n"
             
-            previous_attempts += f"\nAttempt {iteration}: Added code:\n{combined_new_code}\nResult: Score degraded to {new_score:.5f}. {error_feedback}Avoid this pattern."
-            
-            if len(previous_attempts) > 2000:
-                previous_attempts = previous_attempts[-2000:]
+            memory.append(f"[FAILED] Attempt {iteration}: Fold {test_fold} degraded to {new_score:.5f}.{error_feedback}Code snippet:\n{condensed_code}")
                 
         iteration += 1
         time.sleep(2)
