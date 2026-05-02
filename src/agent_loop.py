@@ -15,6 +15,10 @@ import features
 from rewards import append_reward_event
 
 
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(line_buffering=True)
+
 FAST_EVAL_FILE = "src/fast_eval.py"
 ALL_FOLDS = [0, 1, 2, 3, 4]
 FEATURE_SEARCH_FILES = {
@@ -133,13 +137,28 @@ def run_evaluation_folds(fold_indices):
         "--folds",
         ",".join(str(fold) for fold in fold_indices),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    parsed = parse_eval_output(result.stdout)
-    if result.returncode != 0 or parsed.average == float("inf") or not parsed.scores:
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+    output_lines = []
+    for line in process.stdout:
+        output_lines.append(line)
+        print(line, end="", flush=True)
+    returncode = process.wait()
+    output = "".join(output_lines)
+    parsed = parse_eval_output(output)
+    if returncode != 0 or parsed.average == float("inf") or not parsed.scores:
         return EvalResult(
             scores={},
             average=float("inf"),
-            error_log=result.stdout + "\n" + result.stderr,
+            error_log=output,
         )
     return parsed
 
@@ -282,6 +301,9 @@ files will be rejected because the proxy score would not prove final-pipeline im
 Prefer conservative features based on already-aggregated counts, amounts, recency, activity density,
 and stable seasonal comparisons. Avoid one-row-per-customer rolling/window expressions such as
 `rolling_mean(...).over("UniqueID")`, because this autogen block runs after aggregation.
+The container Polars version does not support every horizontal helper. Do not use `pl.std_horizontal`.
+For horizontal sums, minima, and maxima, use explicit column arithmetic, `pl.min_horizontal`, or
+`pl.max_horizontal` over existing numeric columns.
 
 DATA AWARENESS & REFLECTION:
 If you are unsure, output only a `python:analyze` block. It will run with a pandas dataframe named `df`
@@ -449,7 +471,9 @@ def main():
     memory = []
     iteration = 1
     lab_notebook_path = "data/processed/lab_notebook.md"
+    attempt_dir = "data/processed/agent_attempts"
     os.makedirs("data/processed", exist_ok=True)
+    os.makedirs(attempt_dir, exist_ok=True)
 
     def read_lab_notebook():
         if os.path.exists(lab_notebook_path):
@@ -461,6 +485,13 @@ def main():
         entries = current.split("\n\n---\n\n") if current.strip() else []
         entries.append(entry)
         write_file(lab_notebook_path, "\n\n---\n\n".join(entries[-20:]).strip())
+
+    def write_attempt_artifact(status, code, details):
+        slug = re.sub(r"[^a-z0-9]+", "_", status.lower()).strip("_")
+        path = os.path.join(attempt_dir, f"iteration_{iteration:03d}_{slug}.py")
+        detail_lines = "\n".join(f"# {key}: {value}" for key, value in details.items())
+        write_file(path, f"{detail_lines}\n\n{code}")
+        return path
 
     while args.max_iterations is None or iteration <= args.max_iterations:
         print(f"\n--- Iteration {iteration} ---")
@@ -551,6 +582,16 @@ def main():
         )
         condensed_code = combined_new_code[:600] + "..." if len(combined_new_code) > 600 else combined_new_code
         if acceptance.accepted:
+            artifact_path = write_attempt_artifact(
+                "accepted",
+                combined_new_code,
+                {
+                    "status": "accepted",
+                    "average_improvement": f"{acceptance.improvement:.9f}",
+                    "improved_folds": acceptance.improved_folds,
+                    "max_degradation": f"{acceptance.max_degradation:.9f}",
+                },
+            )
             print(
                 "SUCCESS! Global average improved by "
                 f"{acceptance.improvement:.6f}; improved_folds={acceptance.improved_folds}; "
@@ -563,7 +604,8 @@ def main():
                 f"[SUCCESS] Attempt {iteration}: Global Avg improved to {average_baseline:.5f}.\n{condensed_code}"
             )
             append_lab_notebook(
-                f"**SUCCESS:**\nRMSLE improved by {acceptance.improvement:.6f}.\n```python\n{condensed_code}\n```"
+                f"**SUCCESS:**\nRMSLE improved by {acceptance.improvement:.6f}.\n"
+                f"Full code artifact: `{artifact_path}`\n```python\n{condensed_code}\n```"
             )
             append_reward_event(
                 event_type="agent_feature_gen",
@@ -582,11 +624,24 @@ def main():
                 print(f"Accepted improvement, but git commit/push failed: {exc}")
                 return 1
         else:
+            status = "near_miss" if acceptance.improvement > 0 else "rejected"
+            artifact_path = write_attempt_artifact(
+                status,
+                combined_new_code,
+                {
+                    "status": status,
+                    "reason": acceptance.reason,
+                    "average_improvement": f"{acceptance.improvement:.9f}",
+                    "improved_folds": acceptance.improved_folds,
+                    "max_degradation": f"{acceptance.max_degradation:.9f}",
+                },
+            )
             print(f"Rejected after full verification: {acceptance.reason}. Reverting feature file.")
             write_files(current_files_state)
             memory.append(f"[REJECTED] Attempt {iteration}: {acceptance.reason}.\n{condensed_code}")
             append_lab_notebook(
-                f"**FULL-GATE FAIL:**\n{acceptance.reason}\n```python\n{condensed_code}\n```"
+                f"**FULL-GATE FAIL:**\n{acceptance.reason}\n"
+                f"Full code artifact: `{artifact_path}`\n```python\n{condensed_code}\n```"
             )
 
         iteration += 1
