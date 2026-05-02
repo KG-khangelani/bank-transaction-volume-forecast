@@ -132,7 +132,7 @@ except Exception as e:
         if os.path.exists(temp_script):
             os.remove(temp_script)
 
-def generate_new_code(current_files_state, baseline_score, previous_attempts="", schema="", top_features="", is_correction=False):
+def generate_new_code(current_files_state, baseline_score, previous_attempts="", schema="", top_features="", is_correction=False, lab_notebook=""):
     if not api_key:
         print("WARNING: GEMINI_API_KEY not set. Generating a dummy feature for testing.")
         return {"src/features.py": 'features = features.with_columns([(pl.col("txn_count_all") * 2).alias("test_autogen_feature")])'}
@@ -145,16 +145,20 @@ def generate_new_code(current_files_state, baseline_score, previous_attempts="",
     if top_features:
         top_features_prompt = f"\nTop 10 Most Important Features in the Proxy Model:\n{top_features}\nBuild upon these features or create variations of them!\n"
 
+    lab_notebook_prompt = ""
+    if lab_notebook:
+        lab_notebook_prompt = f"\n--- LAB NOTEBOOK (Long-Term Learnings) ---\n{lab_notebook}\n------------------------------------------\n"
+
     prompt = f"""
 You are an expert data scientist participating in the Zindi Nedbank Transaction Volume Forecasting challenge.
 The target metric is Root Mean Squared Logarithmic Error (RMSLE). Lower is better.
-The current baseline proxy RMSLE score is: {baseline_score:.5f}.{correction_prompt}{top_features_prompt}
+The current baseline proxy RMSLE score is: {baseline_score:.5f}.{correction_prompt}{top_features_prompt}{lab_notebook_prompt}
 
 The `features` dataframe has the following columns available:
 {schema}
 
 You have access to inject code into the following files simultaneously:
-1. `src/features.py` (Generate new polars features)
+1. `src/features.py` (Generate new polars features OR drop noisy features)
 2. `src/fast_eval.py` (Tune proxy LightGBM parameters - THIS IS THE ONLY FILE EVALUATED FOR THE LOOP SCORE)
 3. `src/train.py` (Tune final pipeline / LightGBM parameters)
 4. `src/train_xgb.py` (Tune XGBoost parameters)
@@ -164,23 +168,24 @@ You have access to inject code into the following files simultaneously:
 Note: Only changes to `src/fast_eval.py` and `src/features.py` will impact the immediate proxy RMSLE score. However, you should update the other files to keep their hyperparameters or pipelines aligned with the feature set so the final models benefit.
 
 **Few-Shot Examples for Complex Features:**
-Do not just add columns together. Consider complex temporal features, rolling statistics, and conditional logic. Example:
+Do not just add columns together. Consider complex temporal features, rolling statistics, conditional logic, and dropping bad features! Example:
 ```python:src/features.py
 features = features.with_columns([
     (pl.col("txn_amount_sum_all").rolling_mean(window_size=7).over("UniqueID")).alias("rolling_amount_7d"),
-    ((pl.col("txn_count_all") / (pl.col("txn_count_all").shift(7).over("UniqueID") + 1))).alias("wow_growth_ratio"),
-    pl.when(pl.col("Gender") == "M").then(pl.col("txn_amount_sum_all")).otherwise(0).alias("male_spend")
+    ((pl.col("txn_count_all") / (pl.col("txn_count_all").shift(7).over("UniqueID") + 1))).alias("wow_growth_ratio")
 ])
+
+# Drop noisy features that the lab notebook showed were harmful
+features = features.drop(["noisy_column_1", "noisy_column_2"])
 ```
 
-**DATA AWARENESS (REPL):**
-If you are unsure what features to create, you can run Python code to analyze the data! 
+**DATA AWARENESS & REFLECTION (REPL):**
+If you are unsure what features to create, OR if your previous idea failed and you want to reflect on why it failed, you can run Python code to analyze the data! 
 If you output a code block named `python:analyze`, it will NOT be injected into the repository. Instead, it will be executed in a sandboxed pandas environment (with the merged `df` already loaded), and the output will be returned to you in the next prompt.
-Example EDA script:
+Example Reflection script:
 ```python:analyze
-print("Correlations with target:")
-print(df.corr(numeric_only=True)['next_3m_txn_count'].sort_values().head(10))
-print(df['Gender'].value_counts())
+print("Analyzing why the previous Fold 4 overfit occurred...")
+print(df[df['Fold'] == 4]['my_new_feature'].describe())
 ```
 If you use an analyze block, do NOT output any other code blocks. Wait for the observation results!
 
@@ -285,6 +290,28 @@ def main():
     memory = []
     iteration = 1
     
+    lab_notebook_path = "data/processed/lab_notebook.md"
+    if not os.path.exists("data/processed"):
+        os.makedirs("data/processed", exist_ok=True)
+    
+    def read_lab_notebook():
+        if os.path.exists(lab_notebook_path):
+            return read_file(lab_notebook_path)
+        return "No insights recorded yet."
+        
+    def append_lab_notebook(entry):
+        current = ""
+        if os.path.exists(lab_notebook_path):
+            current = read_file(lab_notebook_path)
+        
+        # Keep the notebook from growing infinitely by keeping only the last 20 entries
+        entries = current.split("\n\n---\n\n")
+        entries.append(entry)
+        if len(entries) > 20:
+            entries = entries[-20:]
+            
+        write_file(lab_notebook_path, "\n\n---\n\n".join(entries).strip())
+
     while True:
         print(f"\n--- Iteration {iteration} ---")
         current_files_state = read_all_files()
@@ -292,8 +319,11 @@ def main():
         # Build memory string
         previous_attempts_str = "\n".join(memory[-10:]) # Keep last 10 attempts
         
+        # Load Lab Notebook
+        notebook_content = read_lab_notebook()
+        
         print("Requesting new code block from LLM...")
-        new_blocks = generate_new_code(current_files_state, average_baseline, previous_attempts_str, schema_str, current_top_features, is_correction=False)
+        new_blocks = generate_new_code(current_files_state, average_baseline, previous_attempts_str, schema_str, current_top_features, is_correction=False, lab_notebook=notebook_content)
         
         if not new_blocks:
             print("Failed to generate code, retrying in 10s...")
@@ -330,7 +360,7 @@ def main():
             print("Code crashed! Entering self-correction sub-loop...")
             print(f"Error trace:\n{error_log[-500:]}")
             correction_feedback = previous_attempts_str + f"\nAttempt {iteration}: Added code:\n{combined_new_code}\nResult: CRASHED with error:\n{error_log[-1000:]}\n"
-            corrected_blocks = generate_new_code(current_files_state, average_baseline, correction_feedback, schema_str, current_top_features, is_correction=True)
+            corrected_blocks = generate_new_code(current_files_state, average_baseline, correction_feedback, schema_str, current_top_features, is_correction=True, lab_notebook=notebook_content)
             if corrected_blocks and "analyze" not in corrected_blocks:
                 print(f"Trying corrected code for: {list(corrected_blocks.keys())}")
                 # Rollback first
@@ -356,12 +386,14 @@ def main():
                 baseline_scores = new_scores
                 average_baseline = new_average
                 current_top_features = top_features
-                memory.append(f"[SUCCESS] Attempt {iteration}: Global Avg improved from {average_baseline + improvement:.5f} to {average_baseline:.5f}. Code:\n{condensed_code}")
+                success_msg = f"[SUCCESS] Attempt {iteration}: Global Avg improved to {average_baseline:.5f}. Code:\n{condensed_code}"
+                memory.append(success_msg)
+                append_lab_notebook(f"**SUCCESS:**\nRMSLE improved by {improvement:.5f}.\n**Code Added:**\n```python\n{condensed_code}\n```")
                 
                 try:
                     commit_msg = f"Agent: Improved RMSLE to {new_average:.5f} (delta: -{improvement:.5f})"
                     subprocess.run(["git", "add", "src/"], check=True)
-                    subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+                    subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-m", commit_msg], check=True)
                     subprocess.run(["git", "push"], check=True)
                     print(f"Committed and pushed successful improvement: {commit_msg}")
                 except Exception as e:
@@ -369,7 +401,12 @@ def main():
             else:
                 print(f"OVERFIT DETECTED! Fold {test_fold} improved but Global Average degraded. Rejecting.")
                 write_all_files(current_files_state)
-                memory.append(f"[OVERFIT] Attempt {iteration}: Improved Fold {test_fold} but degraded overall. Snippet:\n{condensed_code}")
+                overfit_msg = f"[OVERFIT] Attempt {iteration}: Improved Fold {test_fold} but degraded overall. Snippet:\n{condensed_code}"
+                memory.append(overfit_msg)
+                
+                # Ask agent to reflect on the overfit next time
+                memory.append("SUGGESTION: Your last attempt overfit. Consider using `python:analyze` to explore why it failed before trying again, or try pruning noisy features with `drop()`.")
+                append_lab_notebook(f"**OVERFIT FAIL:**\nImproved Fold {test_fold} but hurt average. This hypothesis doesn't generalize.\n**Code Added:**\n```python\n{condensed_code}\n```")
         else:
             degradation = new_score - baseline_scores[test_fold]
             print(f"FAILED. Fold {test_fold} degraded by {degradation:.5f}. Reverting ALL files.")
@@ -380,7 +417,12 @@ def main():
             if error_log:
                 error_feedback = f" ERROR:\n{error_log[-300:]}\n"
             
-            memory.append(f"[FAILED] Attempt {iteration}: Fold {test_fold} degraded to {new_score:.5f}.{error_feedback}Code snippet:\n{condensed_code}")
+            fail_msg = f"[FAILED] Attempt {iteration}: Fold {test_fold} degraded by {degradation:.5f}.{error_feedback}Code snippet:\n{condensed_code}"
+            memory.append(fail_msg)
+            
+            # Suggest reflection
+            memory.append("SUGGESTION: Your last attempt degraded performance. Consider using `python:analyze` to explore the data distribution or correlations before trying again, or try `drop()` on useless features.")
+            append_lab_notebook(f"**DEGRADATION FAIL:**\nDegraded Fold {test_fold} by {degradation:.5f}.\n**Code Added:**\n```python\n{condensed_code}\n```")
                 
         iteration += 1
         time.sleep(2)

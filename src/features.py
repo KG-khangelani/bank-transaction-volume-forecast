@@ -2,6 +2,7 @@ import os
 import re
 
 import polars as pl
+import holidays
 
 from pipeline_utils import collect_polars
 
@@ -118,6 +119,31 @@ def create_features(data_dir='data/inputs'):
     is_month_end = day_of_month >= 28
     is_payday_window = (day_of_month >= 25) | (day_of_month <= 5)
     
+    # Generate SA public holidays using the holidays package
+    years = [2013, 2014, 2015, 2016]
+    sa_holidays_obj = holidays.SouthAfrica(years=years)
+    sa_public_holidays = pl.Series([str(d) for d in sa_holidays_obj.keys()]).str.strptime(pl.Date, "%Y-%m-%d")
+
+    black_friday_dates = pl.Series([
+        "2013-11-29", "2014-11-28", "2015-11-27", "2016-11-25"
+    ]).str.strptime(pl.Date, "%Y-%m-%d")
+
+    is_school_holiday = (
+        ((txn_day >= pl.date(2013, 12, 4)) & (txn_day <= pl.date(2014, 1, 14))) |
+        ((txn_day >= pl.date(2014, 3, 28)) & (txn_day <= pl.date(2014, 4, 7))) |
+        ((txn_day >= pl.date(2014, 6, 27)) & (txn_day <= pl.date(2014, 7, 21))) |
+        ((txn_day >= pl.date(2014, 10, 3)) & (txn_day <= pl.date(2014, 10, 13))) |
+        ((txn_day >= pl.date(2014, 12, 10)) & (txn_day <= pl.date(2015, 1, 13))) |
+        ((txn_day >= pl.date(2015, 3, 25)) & (txn_day <= pl.date(2015, 4, 13))) |
+        ((txn_day >= pl.date(2015, 6, 26)) & (txn_day <= pl.date(2015, 7, 20))) |
+        ((txn_day >= pl.date(2015, 10, 2)) & (txn_day <= pl.date(2015, 10, 12))) |
+        ((txn_day >= pl.date(2015, 12, 9)) & (txn_day <= pl.date(2016, 1, 13)))
+    )
+    
+    is_public_holiday = txn_day.is_in(sa_public_holidays)
+    is_black_friday = txn_day.is_in(black_friday_dates)
+    is_festive_season = (txn_day.dt.month() == 12) | ((txn_day.dt.month() == 1) & (txn_day.dt.day() <= 15))
+    
     txn_features = collect_polars(transactions.group_by("UniqueID").agg([
         pl.col("TransactionAmount").len().alias("txn_count_all"),
         pl.col("TransactionAmount").sum().alias("txn_amount_sum_all"),
@@ -129,6 +155,12 @@ def create_features(data_dir='data/inputs'):
         (amt_col > 0).sum().alias("txn_credit_count"),
         amt_col.filter(amt_col < 0).sum().abs().alias("txn_debit_sum"),
         amt_col.filter(amt_col > 0).sum().alias("txn_credit_sum"),
+        
+        # Seasonality & SA Holidays
+        is_public_holiday.sum().alias("public_holiday_txn_count"),
+        is_school_holiday.sum().alias("school_holiday_txn_count"),
+        is_black_friday.sum().alias("black_friday_txn_count"),
+        is_festive_season.sum().alias("festive_season_txn_count"),
         
         # Statement Balance Baseline
         pl.col("StatementBalance").mean().alias("stmt_balance_mean"),
@@ -266,6 +298,15 @@ def create_features(data_dir='data/inputs'):
         # Robust Transaction Ratios
         (pl.col("transfer_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("transfer_txn_ratio"),
         (pl.col("txn_count_all") / pl.col("unique_account_count")).alias("txns_per_account"),
+        
+        # Burn Rate Ratios
+        (pl.col("txn_debit_sum") / (pl.col("txn_credit_sum") + 1)).alias("debit_credit_ratio"),
+        (pl.col("txn_debit_count") / (pl.col("txn_count_all") + 0.001)).alias("debit_txn_share"),
+        
+        # Holiday Ratios
+        (pl.col("public_holiday_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("public_holiday_txn_share"),
+        (pl.col("school_holiday_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("school_holiday_txn_share"),
+        (pl.col("festive_season_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("festive_season_txn_share"),
         
         # Pure Signal Ratios
         (pl.col("reversal_txn_count") / (pl.col("txn_count_all") + 0.001)).alias("reversal_ratio"),
