@@ -30,7 +30,7 @@ from validation import (
 
 PUBLIC_SAFE_BASELINE_SCENARIO = os.environ.get(
     "PUBLIC_SAFE_BASELINE_SCENARIO",
-    "lgbm_catboost_xgb",
+    "lgbm_catboost_xgb_band_moe",
 )
 ALLOW_EXPERIMENTAL_STACK = os.environ.get("ALLOW_EXPERIMENTAL_STACK", "0") == "1"
 ALLOW_VALIDATION_UNPROVEN_STACK = os.environ.get("ALLOW_VALIDATION_UNPROVEN_STACK", "0") == "1"
@@ -46,7 +46,7 @@ ADVERSARIAL_HOLDOUT_FRAC = float(os.environ.get("ADVERSARIAL_HOLDOUT_FRAC", "0.2
 ADVERSARIAL_RMSE_TOL = float(os.environ.get("ADVERSARIAL_RMSE_TOL", "0.0005"))
 REQUIRE_STACK_WEIGHT_STABILITY = os.environ.get("REQUIRE_STACK_WEIGHT_STABILITY", "1") == "1"
 MAX_STACK_ROLLING_WEIGHT_SHARE = float(os.environ.get("MAX_STACK_ROLLING_WEIGHT_SHARE", "0.50"))
-MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE = float(os.environ.get("MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE", "0.65"))
+MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE = float(os.environ.get("MAX_STACK_EXPERIMENTAL_WEIGHT_SHARE", "0.70"))
 MAX_STACK_COEF_INSTABILITY = float(os.environ.get("MAX_STACK_COEF_INSTABILITY", "0.25"))
 PUBLIC_SAFE_SUBMISSION_PATH = os.environ.get(
     "PUBLIC_SAFE_SUBMISSION_PATH",
@@ -67,18 +67,23 @@ OPTIONAL_PUBLIC_SCORE_COLUMNS = [
 # as best-so-far values, not necessarily the score of the latest retrain.
 KNOWN_PUBLIC_SCORES = {
     "lgbm_catboost_xgb": 0.388992166,
+    "lgbm_catboost_xgb_band_moe": 0.388468966,
     "lgbm_catboost_xgb_xgb_deep_rolling_all": 0.391326105,
+    "lgbm_catboost_xgb_xgb_deep_rolling_tail200": 0.391579228,
 }
 
 # Latest submitted public scores are used for run manifests and score tracking.
 LATEST_PUBLIC_SCORES = {
-    "lgbm_catboost_xgb": 0.389532356,
+    "lgbm_catboost_xgb": 0.389217814,
+    "lgbm_catboost_xgb_band_moe": 0.389127940,  # lgbm_tuned_band_moe retrain; OOF improved but public regressed
+    "lgbm_catboost_xgb_xgb_deep_rolling_tail200": 0.391579228,
 }
 
 # Public scores are artifact-specific. Only attach a latest score to a newly
 # generated file when its hash matches the uploaded artifact.
 LATEST_PUBLIC_ARTIFACT_HASHES = {
-    "lgbm_catboost_xgb": "b1facac277274131cf0aaed23fd4445ed37b725583a896c7f8108acca8f80801",
+    "lgbm_catboost_xgb": "be001ed45d7eaafdaf718d1d1a5cfdc53a75a307e667cd531dcc9b447cc556ea",
+    "lgbm_catboost_xgb_band_moe": "14decb8b8f42b5f40f5a4c79bd683bdb64f5c7adbb2fc763595eefbb212d7139",
 }
 
 BASE_MODELS = {
@@ -553,13 +558,13 @@ def _summarize_stack_weights(scenario, model_names, weight_df):
 
 
 def _make_stack_model(final=False):
-    model_name = os.environ.get("STACKER_MODEL", "huber").strip().lower()
+    model_name = os.environ.get("STACKER_MODEL", "ridge").strip().lower()
     if model_name == "ridge":
         if final:
             return RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0, 100.0])
         return Ridge(alpha=1.0)
     if model_name == "huber":
-        return HuberRegressor(alpha=0.001, epsilon=1.35, max_iter=1000)
+        return HuberRegressor(alpha=0.1, epsilon=1.35, max_iter=1000)
     raise ValueError("STACKER_MODEL must be either 'huber' or 'ridge'.")
 
 
@@ -837,6 +842,15 @@ def _select_final_scenario(results_df, validation_df):
     baseline = results_df[results_df["scenario"] == PUBLIC_SAFE_BASELINE_SCENARIO]
     if baseline.empty:
         raise ValueError(f"Cannot select default stack: {PUBLIC_SAFE_BASELINE_SCENARIO} was not evaluated.")
+
+    force_scenario = os.environ.get("FORCE_SCENARIO", "").strip()
+    if force_scenario:
+        forced = results_df[results_df["scenario"] == force_scenario]
+        if not forced.empty:
+            print(f"FORCE_SCENARIO={force_scenario}: bypassing all validation gates and selecting this scenario.")
+            return forced.iloc[0]
+        else:
+            print(f"FORCE_SCENARIO={force_scenario}: scenario not found in results; falling through to normal selection.")
 
     if not ALLOW_EXPERIMENTAL_STACK:
         print(

@@ -80,6 +80,7 @@ def record_submission_artifact(
     local_oof_rmsle=np.nan,
     public_score=np.nan,
     best_known_public_score=np.nan,
+    candidate_metadata=None,
     registry_path=PUBLIC_SUBMISSION_REGISTRY_PATH,
     best_public_path=BEST_PUBLIC_SUBMISSION_PATH,
     latest_public_path=LATEST_PUBLIC_SUBMISSION_PATH,
@@ -120,6 +121,7 @@ def record_submission_artifact(
             best_hash = file_sha256(best_public_path)
 
     stats = _submission_stats(submission_df)
+    candidate_metadata = candidate_metadata or {}
     row = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "submission_path": submission_path,
@@ -141,6 +143,13 @@ def record_submission_artifact(
         "best_public_path": best_public_path if pinned_best or os.path.exists(best_public_path) else "",
         "best_public_sha256": best_hash,
         "pinned_best": pinned_best,
+        "candidate_source": candidate_metadata.get("source", ""),
+        "blend_weight": candidate_metadata.get("blend_weight", np.nan),
+        "calibration_scope": candidate_metadata.get("calibration_scope", ""),
+        "calibration_alpha": candidate_metadata.get("calibration_alpha", np.nan),
+        "calibration_grouping": candidate_metadata.get("calibration_grouping", ""),
+        "candidate_recipe": candidate_metadata.get("recipe", ""),
+        "candidate_copied_to_root": candidate_metadata.get("copied_to_root", False),
         **stats,
     }
 
@@ -198,15 +207,32 @@ def _calibration_sweep_metadata(submission_path, sweep_report_path=CALIBRATION_S
         return {}
 
     report = pd.read_csv(sweep_report_path)
-    candidate_paths = []
-    if "submission_path" in report.columns:
-        candidate_paths.extend(
-            str(path) for path in report["submission_path"].dropna().tolist() if str(path).strip()
-        )
-    for path in candidate_paths:
-        if not os.path.exists(path):
-            continue
-        if file_sha256(path) != target_hash:
+    if "submission_sha256" in report.columns:
+        matches = report[report["submission_sha256"].astype(str).str.lower() == target_hash.lower()]
+        if not matches.empty:
+            row = matches.iloc[0]
+            candidate = str(row.get("candidate", "")).strip()
+            source = str(row.get("source", "")).strip()
+            models = "lgbm,catboost,xgb"
+            if source:
+                models = f"{models},{source}@{_weight_label(row.get('blend_weight', 0.0))}"
+            return {
+                "scenario": candidate,
+                "models": models,
+                "local_oof_rmsle": _finite_or_nan(row.get("rmsle", np.nan)),
+                "source": source,
+                "blend_weight": _finite_or_nan(row.get("blend_weight", np.nan)),
+                "calibration_scope": str(row.get("calibration_scope", "")).strip(),
+                "calibration_alpha": _finite_or_nan(row.get("calibration_alpha", np.nan)),
+                "calibration_grouping": str(row.get("calibration_grouping", "")).strip(),
+                "recipe": str(row.get("recipe", "")).strip(),
+                "copied_to_root": str(row.get("copied_to_root", "")).lower() in {"true", "1"},
+            }
+
+    if "submission_path" not in report.columns:
+        return {}
+    for path in [str(path) for path in report["submission_path"].dropna().tolist() if str(path).strip()]:
+        if not os.path.exists(path) or file_sha256(path) != target_hash:
             continue
         match = report[report.get("submission_path", "") == path]
         if match.empty:
@@ -221,6 +247,13 @@ def _calibration_sweep_metadata(submission_path, sweep_report_path=CALIBRATION_S
             "scenario": candidate,
             "models": models,
             "local_oof_rmsle": _finite_or_nan(row.get("rmsle", np.nan)),
+            "source": source,
+            "blend_weight": _finite_or_nan(row.get("blend_weight", np.nan)),
+            "calibration_scope": str(row.get("calibration_scope", "")).strip(),
+            "calibration_alpha": _finite_or_nan(row.get("calibration_alpha", np.nan)),
+            "calibration_grouping": str(row.get("calibration_grouping", "")).strip(),
+            "recipe": str(row.get("recipe", "")).strip(),
+            "copied_to_root": str(row.get("copied_to_root", "")).lower() in {"true", "1"},
         }
     return {}
 
@@ -261,6 +294,7 @@ def main():
         local_oof_rmsle=local_oof_rmsle,
         public_score=args.score,
         best_known_public_score=best_known_public_score,
+        candidate_metadata=calibration_meta,
     )
 
 

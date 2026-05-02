@@ -15,10 +15,12 @@ if SRC not in sys.path:
 from pipeline_utils import validate_submission
 from alignment import add_public_alignment_columns
 import calibration_sweep
+from agent_loop import evaluate_acceptance, filter_generated_blocks, parse_eval_output
 from calibration_sweep import blend_predictions
-from public_artifacts import file_sha256, record_submission_artifact
+from fast_eval import parse_fold_list
+from public_artifacts import _calibration_sweep_metadata, file_sha256, record_submission_artifact
 from train_rolling import make_final_window_supervised_rows, _count_training_rows
-from validation import get_validation_splits, target_band_report, validate_fold_partition
+from validation import get_last_validation_metadata, get_validation_splits, target_band_report, validate_fold_partition
 
 
 class ValidationContractTests(unittest.TestCase):
@@ -51,6 +53,27 @@ class ValidationContractTests(unittest.TestCase):
             [tuple(val_idx.tolist()) for _, val_idx in folds_a],
             [tuple(val_idx.tolist()) for _, val_idx in folds_b],
         )
+
+    def test_validation_metadata_reports_effective_fallback(self):
+        targets = np.array([10] * 20)
+        df = pd.DataFrame({
+            "UniqueID": [f"m{i:03d}" for i in range(len(targets))],
+            "next_3m_txn_count": targets,
+            "active_days_last_3m": np.arange(len(targets)),
+            "recency_days": np.arange(len(targets)) * 3,
+        })
+        folds, metadata = get_validation_splits(
+            df,
+            n_splits=5,
+            random_state=123,
+            strategy="stratified_activity",
+            return_metadata=True,
+        )
+        validate_fold_partition(folds, len(df))
+        self.assertEqual(metadata["validation_strategy"], "stratified_activity")
+        self.assertEqual(metadata["effective_validation_strategy"], "target_band")
+        self.assertIn("target_band", metadata["validation_fallback_reason"])
+        self.assertEqual(get_last_validation_metadata()["effective_validation_strategy"], "target_band")
 
     def test_submission_validation_rejects_raw_count_scale(self):
         df = pd.DataFrame({
@@ -152,6 +175,41 @@ class ValidationContractTests(unittest.TestCase):
         self.assertTrue((blended >= 0).all())
         self.assertTrue(np.allclose(blended, [1.25, 1.25, 3.25]))
 
+    def test_fast_eval_fold_parser_and_agent_eval_output_parser(self):
+        self.assertEqual(parse_fold_list("0, 2,4"), [0, 2, 4])
+        parsed = parse_eval_output(
+            'FOLD_SCORES_JSON={"0": 0.35, "1": 0.37}\n'
+            "FINAL_AVG=0.36\n"
+            "TOP_FEATURES=a,b\n"
+            "FINAL_SCORE=0.36\n"
+        )
+        self.assertEqual(parsed.scores, {0: 0.35, 1: 0.37})
+        self.assertAlmostEqual(parsed.average, 0.36)
+        self.assertEqual(parsed.top_features, "a,b")
+
+    def test_agent_rejects_disallowed_edit_blocks(self):
+        blocks = {
+            "src/features.py": "features = features",
+            "src/train.py": "params['learning_rate'] = 0.01",
+        }
+        filtered, reason = filter_generated_blocks(
+            blocks,
+            {"src/features.py": ("start", "end")},
+        )
+        self.assertIsNone(filtered)
+        self.assertIn("disallowed", reason)
+
+    def test_agent_acceptance_requires_global_margin_and_fold_safety(self):
+        baseline = {0: 0.40, 1: 0.42, 2: 0.41, 3: 0.39, 4: 0.43}
+        good = {0: 0.399, 1: 0.419, 2: 0.409, 3: 0.3898, 4: 0.429}
+        accepted = evaluate_acceptance(baseline, good, min_delta=0.0002, max_fold_degradation=0.00025)
+        self.assertTrue(accepted.accepted)
+
+        overfit = {0: 0.390, 1: 0.419, 2: 0.409, 3: 0.389, 4: 0.431}
+        rejected = evaluate_acceptance(baseline, overfit, min_delta=0.0002, max_fold_degradation=0.00025)
+        self.assertFalse(rejected.accepted)
+        self.assertIn("degraded", rejected.reason)
+
     def test_public_feedback_is_available_by_scenario_after_hash_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = os.path.join(tmp, "registry.csv")
@@ -177,6 +235,34 @@ class ValidationContractTests(unittest.TestCase):
         self.assertEqual(rows[0]["source"], "rolling_tail200")
         self.assertEqual(rows[0]["family"], "rolling")
         self.assertAlmostEqual(rows[0]["blend_weight"], 0.15)
+
+    def test_calibration_metadata_matches_by_stored_submission_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            submission = os.path.join(tmp, "submission_calibration_best.csv")
+            pd.DataFrame({
+                "UniqueID": ["a", "b", "c"],
+                "next_3m_txn_count": [1.0, 2.0, 3.0],
+            }).to_csv(submission, index=False)
+            sweep_report = os.path.join(tmp, "calibration_sweep_report.csv")
+            pd.DataFrame({
+                "candidate": ["blend_band_moe_w0.255"],
+                "source": ["band_moe"],
+                "blend_weight": [0.255],
+                "rmsle": [0.3794],
+                "submission_sha256": [file_sha256(submission)],
+                "calibration_scope": [""],
+                "calibration_alpha": [0.0],
+                "calibration_grouping": [""],
+                "recipe": ["safe_stack*(1-0.255) + band_moe*0.255"],
+                "copied_to_root": [True],
+            }).to_csv(sweep_report, index=False)
+
+            metadata = _calibration_sweep_metadata(submission, sweep_report_path=sweep_report)
+
+        self.assertEqual(metadata["scenario"], "blend_band_moe_w0.255")
+        self.assertEqual(metadata["source"], "band_moe")
+        self.assertAlmostEqual(metadata["blend_weight"], 0.255)
+        self.assertIn("band_moe@0.255", metadata["models"])
 
     def test_final_window_rows_supply_count_targets_only(self):
         production_train = pd.DataFrame({

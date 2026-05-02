@@ -25,6 +25,7 @@ from public_artifacts import file_sha256
 
 SWEEP_REPORT_PATH = "data/processed/calibration_sweep_report.csv"
 SWEEP_BAND_REPORT_PATH = "data/processed/calibration_sweep_band_report.csv"
+PUBLIC_LOCAL_SEARCH_REPORT_PATH = "data/processed/public_local_search_report.csv"
 SWEEP_SUBMISSION_DIR = "data/processed/calibration_sweep_submissions"
 BEST_SWEEP_SUBMISSION_PATH = "submission_calibration_best.csv"
 PUBLIC_SUBMISSION_REGISTRY_PATH = "data/processed/submission_public_registry.csv"
@@ -607,6 +608,28 @@ def _public_local_search_guidance(candidates):
     return guidance
 
 
+def _write_public_local_search_report(guidance, output_path=PUBLIC_LOCAL_SEARCH_REPORT_PATH):
+    rows = []
+    for source, row in sorted(guidance.items()):
+        rows.append({
+            "source": source,
+            "best_public_candidate": row.get("best_public_candidate", ""),
+            "best_public_weight": row.get("best_public_weight", 0.0),
+            "best_public_score": row.get("best_public_score", 0.0),
+            "mode": row.get("mode", ""),
+            "target_weight": row.get("target_weight", 0.0),
+            "bracket_low_weight": row.get("bracket_low_weight", 0.0),
+            "bracket_high_weight": row.get("bracket_high_weight", 0.0),
+            "min_observed_weight": row.get("min_observed_weight", 0.0),
+            "max_observed_weight": row.get("max_observed_weight", 0.0),
+        })
+    report = pd.DataFrame(rows)
+    ensure_parent_dir(output_path)
+    report.to_csv(output_path, index=False)
+    print(f"Public local-search guidance saved to {output_path}")
+    return report
+
+
 def _evaluate_candidate(
     candidate,
     train,
@@ -894,6 +917,7 @@ def run_calibration_sweep(data_dir="data"):
     _stamp_candidate_hashes(candidates, test)
     family_penalty_per_weight = _family_penalty_per_weight(candidates, y_log, baseline_rmsle)
     public_guidance = _public_local_search_guidance(candidates)
+    _write_public_local_search_report(public_guidance)
     baseline_frame = train[["UniqueID", "next_3m_txn_count"]].copy()
     baseline_frame["pred"] = safe_oof
     baseline_bands = target_band_report(baseline_frame, "pred", scenario="baseline_safe").set_index("target_band")

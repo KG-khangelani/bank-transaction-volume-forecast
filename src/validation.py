@@ -17,6 +17,15 @@ ACTIVITY_CANDIDATES = [
     "txn_count_last_1m",
     "txn_count_all",
 ]
+_LAST_VALIDATION_METADATA = {
+    "validation_strategy": "stratified_activity",
+    "effective_validation_strategy": "unknown",
+    "validation_fallback_reason": "",
+    "validation_repeats": 1,
+    "validation_strata_count": 0,
+    "validation_min_stratum_size": 0,
+    "validation_max_stratum_size": 0,
+}
 
 
 def rmse(y_true, y_pred):
@@ -38,6 +47,42 @@ def validation_repeats(default=1):
     if repeats < 1:
         raise ValueError("VALIDATION_REPEATS must be >= 1.")
     return repeats
+
+
+def _set_last_validation_metadata(metadata):
+    global _LAST_VALIDATION_METADATA
+    _LAST_VALIDATION_METADATA = metadata.copy()
+
+
+def get_last_validation_metadata():
+    return _LAST_VALIDATION_METADATA.copy()
+
+
+def _metadata_row(
+    requested_strategy,
+    effective_strategy,
+    fallback_reason="",
+    strata=None,
+    repeats=1,
+):
+    if strata is not None:
+        counts = pd.Series(strata).astype(str).value_counts()
+        strata_count = int(len(counts))
+        min_stratum = int(counts.min()) if len(counts) else 0
+        max_stratum = int(counts.max()) if len(counts) else 0
+    else:
+        strata_count = 0
+        min_stratum = 0
+        max_stratum = 0
+    return {
+        "validation_strategy": requested_strategy,
+        "effective_validation_strategy": effective_strategy,
+        "validation_fallback_reason": fallback_reason,
+        "validation_repeats": int(repeats),
+        "validation_strata_count": strata_count,
+        "validation_min_stratum_size": min_stratum,
+        "validation_max_stratum_size": max_stratum,
+    }
 
 
 def assign_target_band(values):
@@ -141,8 +186,10 @@ def get_validation_splits(
     random_state=42,
     strategy=None,
     use_repeats=False,
+    return_metadata=False,
 ):
     strategy = strategy or validation_strategy()
+    requested_strategy = strategy
     repeats = validation_repeats() if use_repeats else 1
     n_rows = len(df)
     if n_rows < 2:
@@ -154,16 +201,39 @@ def get_validation_splits(
     if strategy == "rolling_origin":
         folds = _rolling_origin_splits(df, n_splits)
         if folds is not None:
-            return folds
+            metadata = _metadata_row(
+                requested_strategy,
+                "rolling_origin",
+                repeats=repeats,
+            )
+            _set_last_validation_metadata(metadata)
+            return (folds, metadata) if return_metadata else folds
+        fallback_reason = "rolling_origin unavailable; falling back to stratified_activity"
         strategy = "stratified_activity"
+    else:
+        fallback_reason = ""
 
     if strategy == "legacy_kfold":
         splitter = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-        return list(splitter.split(np.arange(n_rows)))
+        folds = list(splitter.split(np.arange(n_rows)))
+        metadata = _metadata_row(
+            requested_strategy,
+            "legacy_kfold",
+            fallback_reason=fallback_reason,
+            repeats=repeats,
+        )
+        _set_last_validation_metadata(metadata)
+        return (folds, metadata) if return_metadata else folds
 
     strata = build_strata(df, y=y, n_splits=n_splits)
+    collapsed_to_target = not pd.Series(strata).astype(str).str.contains("|", regex=False).any()
+    if collapsed_to_target and not fallback_reason:
+        fallback_reason = "stratified_activity collapsed to target_band"
     min_stratum = int(strata.value_counts().min())
     if min_stratum < n_splits:
+        fallback_reason = (
+            (fallback_reason + "; ") if fallback_reason else ""
+        ) + "stratified_activity strata too small; using target_band"
         print(
             "Some validation strata are too small after collapsing; falling back "
             "to target-band stratification."
@@ -175,9 +245,21 @@ def get_validation_splits(
             y_count = np.expm1(y_values) if np.nanmax(y_values) <= 20 else y_values
             strata = pd.Series(target_band_code(y_count), index=df.index).astype(str)
         if int(strata.value_counts().min()) < n_splits:
+            fallback_reason += "; target_band strata too small; using legacy_kfold"
             print("Target-band stratification is still sparse; falling back to legacy KFold.")
             splitter = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-            return list(splitter.split(np.arange(n_rows)))
+            folds = list(splitter.split(np.arange(n_rows)))
+            metadata = _metadata_row(
+                requested_strategy,
+                "legacy_kfold",
+                fallback_reason=fallback_reason,
+                repeats=repeats,
+            )
+            _set_last_validation_metadata(metadata)
+            return (folds, metadata) if return_metadata else folds
+        effective_strategy = "target_band"
+    else:
+        effective_strategy = "target_band" if collapsed_to_target else "stratified_activity"
 
     if repeats > 1:
         splitter = RepeatedStratifiedKFold(
@@ -187,7 +269,16 @@ def get_validation_splits(
         )
     else:
         splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    return list(splitter.split(np.arange(n_rows), strata.to_numpy()))
+    folds = list(splitter.split(np.arange(n_rows), strata.to_numpy()))
+    metadata = _metadata_row(
+        requested_strategy,
+        effective_strategy,
+        fallback_reason=fallback_reason,
+        strata=strata,
+        repeats=repeats,
+    )
+    _set_last_validation_metadata(metadata)
+    return (folds, metadata) if return_metadata else folds
 
 
 def validate_fold_partition(folds, n_rows, require_complete=True):
@@ -229,7 +320,8 @@ def target_band_report(df, pred_col, scenario=None):
 
 
 def validation_config_row():
-    return {
-        "validation_strategy": validation_strategy(),
-        "validation_repeats": validation_repeats(),
-    }
+    metadata = get_last_validation_metadata()
+    if metadata.get("effective_validation_strategy") == "unknown":
+        metadata["validation_strategy"] = validation_strategy()
+        metadata["validation_repeats"] = validation_repeats()
+    return metadata
