@@ -184,6 +184,10 @@ print(df['Gender'].value_counts())
 ```
 If you use an analyze block, do NOT output any other code blocks. Wait for the observation results!
 
+**CRITICAL RULES FOR INJECTION:**
+1. NEVER include `import` statements (like `import polars as pl` or `import numpy as np`) inside your injected code blocks. The code is injected inside existing functions where `pl` and `np` are already imported globally. If you add `import polars as pl`, Python will treat `pl` as a local variable and crash with `UnboundLocalError: local variable 'pl' referenced before assignment`.
+2. Do not define new functions inside the injected blocks unless necessary.
+
 To inject code, you MUST format your response using markdown code blocks with the filename specified right after the language. For example:
 
 ```python:src/features.py
