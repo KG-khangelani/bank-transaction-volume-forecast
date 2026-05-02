@@ -347,6 +347,15 @@ def main():
                 average_baseline = new_average
                 current_top_features = top_features
                 memory.append(f"[SUCCESS] Attempt {iteration}: Global Avg improved from {average_baseline + improvement:.5f} to {average_baseline:.5f}. Code:\n{condensed_code}")
+                
+                try:
+                    commit_msg = f"Agent: Improved RMSLE to {new_average:.5f} (delta: -{improvement:.5f})"
+                    subprocess.run(["git", "add", "src/"], check=True)
+                    subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+                    subprocess.run(["git", "push"], check=True)
+                    print(f"Committed and pushed successful improvement: {commit_msg}")
+                except Exception as e:
+                    print(f"Failed to git commit/push: {e}")
             else:
                 print(f"OVERFIT DETECTED! Fold {test_fold} improved but Global Average degraded. Rejecting.")
                 write_all_files(current_files_state)
