@@ -61,15 +61,15 @@ def run_fast_eval(data_dir='data', log_reward=False, baseline_score=None):
     params = {
         "objective": "regression", 
         "metric": "rmse", 
-        "learning_rate": 0.02, # Slightly increased for faster convergence
-        "num_leaves": 63,       # Increased capacity
-        "max_depth": 8,         # Increased depth to capture interactions
-        "min_child_samples": 30, # Slightly lower to allow more granular leaves
-        "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
+        "learning_rate": 0.01, # Further lowered for better convergence
+        "num_leaves": 127,       # Increased capacity for richer feature set
+        "max_depth": 8,         # Slightly increased to capture interactions
+        "min_child_samples": 30, # Reduced slightly to allow more detailed splits
+        "feature_fraction": 0.8, # Increased slightly as feature set expanded
+        "bagging_fraction": 0.7,
         "bagging_freq": 5,
-        "lambda_l1": 0.5,       # Increased regularization to prevent overfitting with more leaves
-        "lambda_l2": 0.5,
+        "lambda_l1": 1.5,       # Increased regularization to counter higher num_leaves
+        "lambda_l2": 1.5,
         "verbosity": -1,
         "random_state": 42,
         "n_jobs": -1

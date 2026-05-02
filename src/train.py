@@ -65,15 +65,15 @@ def train_model(data_dir='data'):
     params = {
         "objective": "regression",
         "metric": "rmse",
-        "learning_rate": 0.02,
-        "num_leaves": 63,
+        "learning_rate": 0.01,
+        "num_leaves": 127,
         "max_depth": 8,
         "min_child_samples": 30,
         "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
+        "bagging_fraction": 0.7,
         "bagging_freq": 5,
-        "lambda_l1": 0.5,
-        "lambda_l2": 0.5,
+        "lambda_l1": 1.5,
+        "lambda_l2": 1.5,
         "verbosity": -1,
         "random_state": 42
     }
