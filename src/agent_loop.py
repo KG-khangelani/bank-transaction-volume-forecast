@@ -5,6 +5,9 @@ import time
 import subprocess
 import textwrap
 from google import genai
+import sys
+sys.path.append('src')
+import features
 
 # Configure this with your actual API key or via environment variable
 api_key = os.environ.get("GEMINI_API_KEY", "")
@@ -61,18 +64,19 @@ def inject_autogen_block(content, new_block, start_tag, end_tag):
 def run_evaluation(baseline_score):
     try:
         cmd = [sys.executable, FAST_EVAL_FILE, "--baseline", str(baseline_score), "--log-reward"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         # Parse output for FINAL_SCORE
         for line in result.stdout.splitlines():
             if line.startswith("FINAL_SCORE="):
-                return float(line.split("=")[1])
+                return float(line.split("=")[1]), ""
         print("Failed to parse FINAL_SCORE from output")
-        return float("inf")
-    except subprocess.CalledProcessError as e:
-        print(f"Evaluation failed: {e.stderr}")
-        return float("inf")
+        # Combine stdout and stderr for debugging feedback to the agent
+        return float("inf"), result.stdout + "\n" + result.stderr
+    except Exception as e:
+        print(f"Evaluation failed to run: {e}")
+        return float("inf"), str(e)
 
-def generate_new_code(current_files_state, baseline_score, previous_attempts=""):
+def generate_new_code(current_files_state, baseline_score, previous_attempts="", schema=""):
     if not api_key:
         print("WARNING: GEMINI_API_KEY not set. Generating a dummy feature for testing.")
         return {"src/features.py": 'features = features.with_columns([(pl.col("txn_count_all") * 2).alias("test_autogen_feature")])'}
@@ -81,6 +85,9 @@ def generate_new_code(current_files_state, baseline_score, previous_attempts="")
 You are an expert data scientist participating in the Zindi Nedbank Transaction Volume Forecasting challenge.
 The target metric is Root Mean Squared Logarithmic Error (RMSLE). Lower is better.
 The current baseline proxy RMSLE score is: {baseline_score:.5f}.
+
+The `features` dataframe has the following columns available:
+{schema}
 
 You have access to inject code into the following files simultaneously:
 1. `src/features.py` (Generate new polars features)
@@ -155,9 +162,18 @@ Please output the code blocks to inject. You do not need to provide blocks for a
 
 def main():
     print("Starting Automated Multi-File Engineering Loop...")
-    print("Evaluating current baseline...")
     
-    baseline_score = run_evaluation(baseline_score=1.0)
+    print("Extracting feature schema...")
+    try:
+        df_schema = features.create_features(data_dir='data/inputs')
+        schema_str = ", ".join(df_schema.columns)
+        print(f"Extracted {len(df_schema.columns)} columns for schema.")
+    except Exception as e:
+        schema_str = f"Error extracting schema: {e}"
+        print(schema_str)
+
+    print("Evaluating current baseline...")
+    baseline_score, _ = run_evaluation(baseline_score=1.0)
     if baseline_score == float("inf"):
         print("Failed to get initial baseline. Exiting.")
         return
@@ -172,7 +188,7 @@ def main():
         current_files_state = read_all_files()
         
         print("Requesting new code block from LLM...")
-        new_blocks = generate_new_code(current_files_state, baseline_score, previous_attempts)
+        new_blocks = generate_new_code(current_files_state, baseline_score, previous_attempts, schema=schema_str)
         
         if not new_blocks:
             print("Failed to generate code, retrying in 10s...")
@@ -194,7 +210,7 @@ def main():
         write_all_files(updated_files_state)
         
         # Evaluate
-        new_score = run_evaluation(baseline_score)
+        new_score, error_log = run_evaluation(baseline_score)
         
         if new_score < baseline_score:
             improvement = baseline_score - new_score
@@ -206,7 +222,12 @@ def main():
             print(f"FAILED. Score degraded by {degradation:.5f}. Reverting ALL files.")
             # Atomic rollback
             write_all_files(current_files_state)
-            previous_attempts += f"\nAttempt {iteration}: Added code:\n{combined_new_code}\nResult: Score degraded to {new_score:.5f}. Avoid this pattern."
+            
+            error_feedback = ""
+            if error_log:
+                error_feedback = f"\nThe code caused an ERROR during evaluation:\n{error_log[-500:]}\n"
+            
+            previous_attempts += f"\nAttempt {iteration}: Added code:\n{combined_new_code}\nResult: Score degraded to {new_score:.5f}. {error_feedback}Avoid this pattern."
             
             if len(previous_attempts) > 2000:
                 previous_attempts = previous_attempts[-2000:]
