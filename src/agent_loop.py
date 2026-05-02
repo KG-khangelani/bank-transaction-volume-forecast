@@ -49,17 +49,22 @@ def extract_autogen_block(content, start_tag, end_tag):
     return ""
 
 def inject_autogen_block(content, new_block, start_tag, end_tag):
-    pattern = rf"({re.escape(start_tag)}\n)(.*?)(\n\s*{re.escape(end_tag)})"
-    # Normalize indentation: dedent to remove common whitespace, then indent exactly 4 spaces
-    # Exception: if new_block is empty, don't indent
-    if new_block.strip():
-        new_block = textwrap.dedent(new_block.strip("\n"))
-        new_block = textwrap.indent(new_block, '    ')
-    else:
-        new_block = ""
+    # Match optional leading whitespace, the start tag, the newline, the content, and the end tag
+    pattern = rf"([ \t]*){re.escape(start_tag)}\n(.*?)(\n[ \t]*{re.escape(end_tag)})"
     
-    # Use lambda to avoid issues with backreferences in replacement string
-    return re.sub(pattern, lambda m: f"{m.group(1)}{new_block}{m.group(3)}", content, flags=re.DOTALL)
+    def repl(m):
+        indentation = m.group(1)
+        start_line = m.group(1) + start_tag + "\n"
+        
+        if new_block.strip():
+            nb = textwrap.dedent(new_block.strip("\n"))
+            nb = textwrap.indent(nb, indentation)
+        else:
+            nb = ""
+            
+        return f"{start_line}{nb}{m.group(3)}"
+        
+    return re.sub(pattern, repl, content, flags=re.DOTALL)
 
 def run_evaluation(baseline_score, fold_idx=0):
     try:
@@ -319,6 +324,7 @@ def main():
         # Self-correction sub-loop
         if new_score == float("inf") and error_log:
             print("Code crashed! Entering self-correction sub-loop...")
+            print(f"Error trace:\n{error_log[-500:]}")
             correction_feedback = previous_attempts_str + f"\nAttempt {iteration}: Added code:\n{combined_new_code}\nResult: CRASHED with error:\n{error_log[-1000:]}\n"
             corrected_blocks = generate_new_code(current_files_state, average_baseline, correction_feedback, schema_str, current_top_features, is_correction=True)
             if corrected_blocks and "analyze" not in corrected_blocks:
