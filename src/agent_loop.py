@@ -224,6 +224,27 @@ def probe_passed(baseline_scores, candidate_scores, max_fold_degradation):
     return result.accepted, result.reason
 
 
+def parse_probe_folds(value):
+    if value is None or str(value).strip() == "":
+        return None
+    folds = []
+    for part in str(value).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        fold = int(part)
+        if fold not in ALL_FOLDS:
+            raise ValueError(f"Probe fold must be one of {ALL_FOLDS}; got {fold}.")
+        folds.append(fold)
+    if not folds:
+        raise ValueError("--probe-folds must include at least one fold index.")
+    deduped = []
+    for fold in folds:
+        if fold not in deduped:
+            deduped.append(fold)
+    return deduped
+
+
 def execute_analyze_block(code_block):
     script_content = f"""
 import os
@@ -416,6 +437,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Automated feature-engineering loop with robust fold gates.")
     parser.add_argument("--max-iterations", type=int, default=None, help="Maximum candidate iterations; default unlimited.")
     parser.add_argument("--probe-fold-count", type=int, default=2)
+    parser.add_argument("--probe-folds", default=None, help="Comma-separated fold indexes to probe, e.g. 0,1,3,4.")
     parser.add_argument("--accept-min-delta", type=float, default=0.00020)
     parser.add_argument("--max-fold-degradation", type=float, default=0.00025)
     parser.add_argument("--max-llm-failures", type=int, default=5)
@@ -429,6 +451,7 @@ def main():
     args = parse_args()
     editable_files = FEATURE_SEARCH_FILES
     editable_paths = list(editable_files)
+    explicit_probe_folds = parse_probe_folds(args.probe_folds)
 
     print("Starting guarded feature-engineering loop...")
     print(f"Mode: {args.mode}; editable files: {editable_paths}")
@@ -529,7 +552,7 @@ def main():
             continue
 
         print(f"Generated code for files: {list(new_blocks.keys())}")
-        probe_folds = ALL_FOLDS[: max(1, min(args.probe_fold_count, len(ALL_FOLDS)))]
+        probe_folds = explicit_probe_folds or ALL_FOLDS[: max(1, min(args.probe_fold_count, len(ALL_FOLDS)))]
         print(f"Testing deterministic probe folds: {probe_folds}")
 
         try:
