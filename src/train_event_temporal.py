@@ -35,6 +35,11 @@ STATIC_NUMERIC_CANDIDATES = [
     "birthday_in_pred_window",
     "birthday_pred_month_index",
     "days_to_birthday_in_pred_window",
+    "birthdate_missing",
+    "birthdate_after_cutoff",
+    "birthdate_age_under_18",
+    "birthdate_age_over_100",
+    "birthdate_age_was_clipped",
 ]
 
 

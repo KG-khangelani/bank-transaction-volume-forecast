@@ -2,9 +2,11 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -18,6 +20,7 @@ import calibration_sweep
 from agent_loop import evaluate_acceptance, filter_generated_blocks, parse_eval_output
 from calibration_sweep import blend_predictions
 from fast_eval import parse_fold_list
+from features import birthdate_feature_exprs
 from public_artifacts import _calibration_sweep_metadata, file_sha256, record_submission_artifact
 from train_rolling import make_final_window_supervised_rows, _count_training_rows
 from validation import get_last_validation_metadata, get_validation_splits, target_band_report, validate_fold_partition
@@ -89,6 +92,41 @@ class ValidationContractTests(unittest.TestCase):
         report = target_band_report(df, "pred")
         self.assertEqual(report["target_band"].tolist(), ["<20", "20-74", "75-199", "200-499", "500+"])
         self.assertTrue(np.allclose(report["rmse_log"].fillna(0), 0))
+
+    def test_birthdate_features_clip_outliers_and_flag_anomalies(self):
+        df = pl.DataFrame({
+            "BirthDate": [
+                datetime(1890, 2, 14),
+                datetime(2015, 12, 1),
+                datetime(2010, 5, 20),
+                datetime(1990, 12, 1),
+                None,
+            ],
+        }).with_columns(
+            birthdate_feature_exprs(datetime(2015, 11, 1), [11, 12, 1], [0, 30, 61])
+        )
+
+        rows = df.select([
+            "Age",
+            "age_at_prediction_start",
+            "birthdate_missing",
+            "birthdate_after_cutoff",
+            "birthdate_age_under_18",
+            "birthdate_age_over_100",
+            "birthdate_age_was_clipped",
+            "days_to_birthday_in_pred_window",
+        ]).to_dicts()
+
+        self.assertEqual(rows[0]["Age"], 100)
+        self.assertEqual(rows[0]["age_at_prediction_start"], 100)
+        self.assertEqual(rows[0]["birthdate_age_over_100"], 1)
+        self.assertEqual(rows[0]["birthdate_age_was_clipped"], 1)
+        self.assertEqual(rows[1]["age_at_prediction_start"], 0)
+        self.assertEqual(rows[1]["birthdate_after_cutoff"], 1)
+        self.assertEqual(rows[1]["birthdate_age_was_clipped"], 1)
+        self.assertEqual(rows[2]["birthdate_age_under_18"], 1)
+        self.assertEqual(rows[3]["days_to_birthday_in_pred_window"], 30)
+        self.assertEqual(rows[4]["birthdate_missing"], 1)
 
     def test_public_alignment_penalizes_known_rolling_miss(self):
         report = pd.DataFrame({

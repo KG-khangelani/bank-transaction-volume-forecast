@@ -10,6 +10,15 @@ from pipeline_utils import (
     write_count_submission,
 )
 
+
+def align_to_model_features(frame, model):
+    feature_names = model.feature_name()
+    for col in feature_names:
+        if col not in frame.columns:
+            frame[col] = 0
+    return frame[feature_names]
+
+
 def generate_predictions(data_dir='data'):
     require_nvidia_gpu()
     print("Loading test data and features...")
@@ -35,7 +44,7 @@ def generate_predictions(data_dir='data'):
     preds = np.zeros(len(X))
     for mf in model_files:
         model = lgb.Booster(model_file=os.path.join('models', mf))
-        preds += model.predict(X)
+        preds += model.predict(align_to_model_features(X.copy(), model))
         
     # Average the predictions across all folds
     preds /= len(model_files)

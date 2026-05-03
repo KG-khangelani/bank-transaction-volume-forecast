@@ -9,6 +9,22 @@ from pipeline_utils import (
     write_count_submission,
 )
 
+
+def align_to_model_features(frame, model):
+    feature_names = getattr(model, "feature_names_", None)
+    if not feature_names:
+        try:
+            feature_names = model.get_feature_names()
+        except AttributeError:
+            feature_names = None
+    if not feature_names:
+        return frame
+    for col in feature_names:
+        if col not in frame.columns:
+            frame[col] = 0
+    return frame[feature_names]
+
+
 def predict_catboost(data_dir='data'):
     print("Loading test data and features...")
     test = pd.read_csv(os.path.join(data_dir, 'inputs', 'Test.csv'))
@@ -35,7 +51,7 @@ def predict_catboost(data_dir='data'):
     for mf in model_files:
         model = CatBoostRegressor()
         model.load_model(os.path.join('models', mf))
-        preds += model.predict(X)
+        preds += model.predict(align_to_model_features(X.copy(), model))
         
     preds /= len(model_files)
     

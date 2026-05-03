@@ -1,5 +1,6 @@
 import os
 import re
+from datetime import datetime
 
 import polars as pl
 import holidays
@@ -52,6 +53,10 @@ NUMERIC_DTYPES = {
     pl.Float32, pl.Float64,
 }
 
+DATE_FEATURE_AGE_FLOOR = 0
+DATE_FEATURE_AGE_CAP = 100
+DATE_FEATURE_MINOR_AGE = 18
+
 
 def slug(value):
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
@@ -73,6 +78,62 @@ def category_share_exprs(categories, prefix, count_suffix, denom_col, share_suff
         .alias(f"{prefix}_{slug(value)}_share{share_suffix}")
         for value in categories
     ]
+
+
+def birthdate_feature_exprs(cutoff, target_months, target_day_offsets):
+    birth_date = pl.col("BirthDate")
+    birth_month = birth_date.dt.month()
+    birth_day = birth_date.dt.day()
+    birthday_after_cutoff = (
+        (birth_month > cutoff.month) |
+        ((birth_month == cutoff.month) & (birth_day > cutoff.day))
+    )
+    raw_age = pl.lit(cutoff.year) - birth_date.dt.year()
+    raw_age_at_cutoff = raw_age - birthday_after_cutoff.cast(pl.Int32)
+
+    month_index_expr = pl.lit(-1)
+    days_to_expr = pl.lit(999)
+    for idx, (month, days_offset) in enumerate(zip(target_months, target_day_offsets)):
+        month_index_expr = (
+            pl.when(birth_month == month)
+            .then(idx)
+            .otherwise(month_index_expr)
+        )
+        days_to_expr = (
+            pl.when(birth_month == month)
+            .then(days_offset + birth_day - cutoff.day)
+            .otherwise(days_to_expr)
+        )
+
+    age_was_clipped = (
+        (raw_age_at_cutoff < DATE_FEATURE_AGE_FLOOR) |
+        (raw_age_at_cutoff > DATE_FEATURE_AGE_CAP)
+    ).fill_null(False)
+
+    return [
+        raw_age.clip(DATE_FEATURE_AGE_FLOOR, DATE_FEATURE_AGE_CAP).cast(pl.Int32).alias("Age"),
+        raw_age_at_cutoff.clip(DATE_FEATURE_AGE_FLOOR, DATE_FEATURE_AGE_CAP)
+            .cast(pl.Int32)
+            .alias("age_at_prediction_start"),
+        birth_date.is_null().cast(pl.Int8).alias("birthdate_missing"),
+        (birth_date > pl.lit(cutoff)).fill_null(False).cast(pl.Int8).alias("birthdate_after_cutoff"),
+        (
+            (raw_age_at_cutoff >= DATE_FEATURE_AGE_FLOOR) &
+            (raw_age_at_cutoff < DATE_FEATURE_MINOR_AGE)
+        ).fill_null(False).cast(pl.Int8).alias("birthdate_age_under_18"),
+        (raw_age_at_cutoff > DATE_FEATURE_AGE_CAP)
+            .fill_null(False)
+            .cast(pl.Int8)
+            .alias("birthdate_age_over_100"),
+        age_was_clipped.cast(pl.Int8).alias("birthdate_age_was_clipped"),
+        pl.when(birth_date.is_not_null() & birth_month.is_in(target_months))
+            .then(1)
+            .otherwise(0)
+            .alias("birthday_in_pred_window"),
+        month_index_expr.alias("birthday_pred_month_index"),
+        days_to_expr.alias("days_to_birthday_in_pred_window"),
+    ]
+
 
 def create_features(data_dir='data/inputs'):
     print("Loading datasets with Polars...")
@@ -548,38 +609,10 @@ def create_features(data_dir='data/inputs'):
     ])
 
     print("Engineering demographic features...")
-    base_date = pl.datetime(2015, 11, 1)
-    birth_month = pl.col("BirthDate").dt.month()
-    birth_day = pl.col("BirthDate").dt.day()
-    birthday_after_prediction_start = (
-        (birth_month > 11) |
-        ((birth_month == 11) & (birth_day > 1))
-    )
+    base_date = datetime(2015, 11, 1)
     
     demo_df = demographics.with_columns([
-        (base_date.dt.year() - pl.col("BirthDate").dt.year()).alias("Age"),
-        (pl.lit(2015) - pl.col("BirthDate").dt.year() - birthday_after_prediction_start.cast(pl.Int32))
-            .alias("age_at_prediction_start"),
-        pl.when(pl.col("BirthDate").is_not_null() & birth_month.is_in([11, 12, 1]))
-            .then(1)
-            .otherwise(0)
-            .alias("birthday_in_pred_window"),
-        pl.when(birth_month == 11)
-            .then(0)
-            .when(birth_month == 12)
-            .then(1)
-            .when(birth_month == 1)
-            .then(2)
-            .otherwise(-1)
-            .alias("birthday_pred_month_index"),
-        pl.when(birth_month == 11)
-            .then(birth_day - 1)
-            .when(birth_month == 12)
-            .then(30 + birth_day)
-            .when(birth_month == 1)
-            .then(61 + birth_day)
-            .otherwise(999)
-            .alias("days_to_birthday_in_pred_window"),
+        *birthdate_feature_exprs(base_date, [11, 12, 1], [0, 30, 61]),
         pl.col("IncomeCategory").fill_null("Unknown"),
         pl.col("AnnualGrossIncome").fill_null(0.0)
     ])
@@ -643,6 +676,11 @@ def create_features(data_dir='data/inputs'):
         "fin_interest_income_mean": 0.0, "fin_interest_revenue_mean": 0.0,
         "Age": demo_df["Age"].mean(),
         "age_at_prediction_start": demo_df["age_at_prediction_start"].mean(),
+        "birthdate_missing": 1,
+        "birthdate_after_cutoff": 0,
+        "birthdate_age_under_18": 0,
+        "birthdate_age_over_100": 0,
+        "birthdate_age_was_clipped": 1,
         "birthday_in_pred_window": 0,
         "birthday_pred_month_index": -1,
         "days_to_birthday_in_pred_window": 999

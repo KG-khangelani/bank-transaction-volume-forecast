@@ -10,6 +10,7 @@ from features import (
     REVERSAL_TYPE_CATEGORIES,
     TRANSACTION_BATCH_CATEGORIES,
     TRANSACTION_TYPE_CATEGORIES,
+    birthdate_feature_exprs,
     category_count_aggs,
     category_share_exprs,
     slug,
@@ -50,43 +51,9 @@ def month_days_from_cutoff(cutoff, month_index):
 
 
 def _birthday_feature_exprs(cutoff):
-    birth_month = pl.col("BirthDate").dt.month()
-    birth_day = pl.col("BirthDate").dt.day()
-    birthday_after_cutoff = (
-        (birth_month > cutoff.month) |
-        ((birth_month == cutoff.month) & (birth_day > cutoff.day))
-    )
     target_months = [add_months(cutoff, i).month for i in range(3)]
-
-    month_index_expr = pl.lit(-1)
-    days_to_expr = pl.lit(999)
-    for idx, month in enumerate(target_months):
-        days_offset = month_days_from_cutoff(cutoff, idx)
-        month_index_expr = (
-            pl.when(birth_month == month)
-            .then(idx)
-            .otherwise(month_index_expr)
-        )
-        days_to_expr = (
-            pl.when(birth_month == month)
-            .then(days_offset + birth_day - cutoff.day)
-            .otherwise(days_to_expr)
-        )
-
-    return [
-        (pl.lit(cutoff.year) - pl.col("BirthDate").dt.year()).alias("Age"),
-        (
-            pl.lit(cutoff.year)
-            - pl.col("BirthDate").dt.year()
-            - birthday_after_cutoff.cast(pl.Int32)
-        ).alias("age_at_prediction_start"),
-        pl.when(pl.col("BirthDate").is_not_null() & birth_month.is_in(target_months))
-        .then(1)
-        .otherwise(0)
-        .alias("birthday_in_pred_window"),
-        month_index_expr.alias("birthday_pred_month_index"),
-        days_to_expr.alias("days_to_birthday_in_pred_window"),
-    ]
+    target_day_offsets = [month_days_from_cutoff(cutoff, idx) for idx in range(3)]
+    return birthdate_feature_exprs(cutoff, target_months, target_day_offsets)
 
 
 def _fill_feature_nulls(features, demo_df):
@@ -133,6 +100,11 @@ def _fill_feature_nulls(features, demo_df):
         "fin_interest_revenue_mean": 0.0,
         "Age": demo_df["Age"].mean(),
         "age_at_prediction_start": demo_df["age_at_prediction_start"].mean(),
+        "birthdate_missing": 1,
+        "birthdate_after_cutoff": 0,
+        "birthdate_age_under_18": 0,
+        "birthdate_age_over_100": 0,
+        "birthdate_age_was_clipped": 1,
         "birthday_in_pred_window": 0,
         "birthday_pred_month_index": -1,
         "days_to_birthday_in_pred_window": 999,
