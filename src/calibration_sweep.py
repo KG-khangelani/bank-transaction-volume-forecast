@@ -50,6 +50,9 @@ MIN_CALIBRATION_GROUP_ROWS = int(os.environ.get("SWEEP_MIN_CALIBRATION_GROUP_ROW
 SKIP_PUBLIC_SUBMITTED = os.environ.get("SWEEP_SKIP_PUBLIC_SUBMITTED", "1") == "1"
 PUBLIC_LOCAL_SEARCH_STEP = float(os.environ.get("SWEEP_PUBLIC_LOCAL_SEARCH_STEP", "0.05"))
 PUBLIC_LOCAL_SEARCH_MAX_STEP = float(os.environ.get("SWEEP_PUBLIC_LOCAL_SEARCH_MAX_STEP", "0.06"))
+ROLLING_GATED_WEIGHTS = [0.10, 0.15, 0.20, 0.30]
+ROLLING_GATED_MIN_TRAIN_ROWS = int(os.environ.get("SWEEP_ROLLING_GATED_MIN_TRAIN_ROWS", "150"))
+ROLLING_GATED_MIN_TEST_ROWS = int(os.environ.get("SWEEP_ROLLING_GATED_MIN_TEST_ROWS", "50"))
 
 SIDE_CARS = {
     "xgb_deep": {
@@ -731,6 +734,10 @@ def _evaluate_candidate(
         "calibration_scope": candidate.get("calibration_scope", ""),
         "calibration_alpha": float(candidate.get("calibration_alpha", 0.0)),
         "calibration_grouping": candidate.get("calibration_grouping", ""),
+        "gate": candidate.get("gate", ""),
+        "gate_train_rows": int(candidate.get("gate_train_rows", 0) or 0),
+        "gate_test_rows": int(candidate.get("gate_test_rows", 0) or 0),
+        "gate_test_share": float(candidate.get("gate_test_share", 0.0) or 0.0),
         "rmsle": score,
         "baseline_rmsle": baseline_rmsle,
         "oof_gain_vs_baseline": oof_gain,
@@ -763,6 +770,10 @@ def _candidate_rows(train, test, features):
     y_log = np.log1p(train["next_3m_txn_count"].to_numpy(dtype=np.float64))
     train_activity = _activity_bands(train, features)
     test_activity = _activity_bands(test, features)
+    train_feature_frame = train[["UniqueID"]].merge(features, on="UniqueID", how="left")
+    test_feature_frame = test[["UniqueID"]].merge(features, on="UniqueID", how="left")
+    train_safe_band = _predicted_band(safe_oof)
+    test_safe_band = _predicted_band(safe_test)
 
     candidates = [{
         "candidate": "baseline_safe",
@@ -852,6 +863,87 @@ def _candidate_rows(train, test, features):
                     "calibration_grouping": "pred_band",
                     "rolling_weight": weight,
                     "experimental_weight": weight,
+                    "oof": oof,
+                    "test": test_pred,
+                })
+
+    gated_rolling_specs = []
+
+    def add_gated_rolling_spec(label, train_mask, test_mask):
+        train_mask = np.asarray(train_mask, dtype=bool)
+        test_mask = np.asarray(test_mask, dtype=bool)
+        train_rows = int(train_mask.sum())
+        test_rows = int(test_mask.sum())
+        if train_rows < ROLLING_GATED_MIN_TRAIN_ROWS or test_rows < ROLLING_GATED_MIN_TEST_ROWS:
+            return
+        gated_rolling_specs.append((label, train_mask, test_mask, train_rows, test_rows))
+
+    add_gated_rolling_spec(
+        "safe_pred_low",
+        train_safe_band == "<20",
+        test_safe_band == "<20",
+    )
+    add_gated_rolling_spec(
+        "safe_pred_low_mid",
+        np.isin(train_safe_band, ["<20", "20-74"]),
+        np.isin(test_safe_band, ["<20", "20-74"]),
+    )
+    train_low_activity = pd.Series(train_activity).astype(str).str.endswith("_0").to_numpy()
+    test_low_activity = pd.Series(test_activity).astype(str).str.endswith("_0").to_numpy()
+    add_gated_rolling_spec("activity_low", train_low_activity, test_low_activity)
+    add_gated_rolling_spec(
+        "activity_low_safe_pred_low",
+        train_low_activity & (train_safe_band == "<20"),
+        test_low_activity & (test_safe_band == "<20"),
+    )
+    if "active_days_last_3m" in train_feature_frame.columns and "active_days_last_3m" in test_feature_frame.columns:
+        train_inactive_3m = (
+            pd.to_numeric(train_feature_frame["active_days_last_3m"], errors="coerce").fillna(0).to_numpy(dtype=np.float64)
+            <= 0
+        )
+        test_inactive_3m = (
+            pd.to_numeric(test_feature_frame["active_days_last_3m"], errors="coerce").fillna(0).to_numpy(dtype=np.float64)
+            <= 0
+        )
+        add_gated_rolling_spec("inactive_last_3m", train_inactive_3m, test_inactive_3m)
+        add_gated_rolling_spec(
+            "inactive_last_3m_safe_pred_low",
+            train_inactive_3m & (train_safe_band == "<20"),
+            test_inactive_3m & (test_safe_band == "<20"),
+        )
+
+    for sidecar_name in ["rolling_tail200", "rolling_tail500", "rolling_direct"]:
+        if sidecar_name not in available_sidecars:
+            continue
+        sidecar = available_sidecars[sidecar_name]
+        for gate_label, train_mask, test_mask, train_rows, test_rows in gated_rolling_specs:
+            test_share = float(test_rows / max(len(test), 1))
+            for weight in ROLLING_GATED_WEIGHTS:
+                effective_weight = float(weight * test_share)
+                weight_label = _weight_label(weight)
+                gate_slug = _slug(gate_label)
+                oof = safe_oof.copy()
+                test_pred = safe_test.copy()
+                oof[train_mask] = blend_predictions(safe_oof[train_mask], sidecar["oof"][train_mask], weight)
+                test_pred[test_mask] = blend_predictions(safe_test[test_mask], sidecar["test"][test_mask], weight)
+                candidates.append({
+                    "candidate": f"blend_{sidecar_name}_w{weight_label}_gate_{gate_slug}",
+                    "recipe": (
+                        f"safe/{sidecar_name} blend only for {gate_label}; "
+                        f"local_weight={weight_label}, exposure_weight={effective_weight:.4f}"
+                    ),
+                    "source": sidecar_name,
+                    "family": "rolling_gated",
+                    "blend_weight": effective_weight,
+                    "calibration_scope": "gated",
+                    "calibration_alpha": 0.0,
+                    "calibration_grouping": gate_label,
+                    "rolling_weight": effective_weight,
+                    "experimental_weight": effective_weight,
+                    "gate": gate_label,
+                    "gate_train_rows": train_rows,
+                    "gate_test_rows": test_rows,
+                    "gate_test_share": test_share,
                     "oof": oof,
                     "test": test_pred,
                 })
