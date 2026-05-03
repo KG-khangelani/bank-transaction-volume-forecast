@@ -439,7 +439,7 @@ def create_features(data_dir='data/inputs'):
         txn_day.alias("txn_day")
     ]).group_by(["UniqueID", "txn_day"]).agg([
         pl.col("TransactionAmount").len().alias("daily_txn_count"),
-        pl.col("TransactionAmount").abs().sum().alias("daily_abs_amount_sum"),
+        pl.col("TransactionAmount").abs().sort().sum().alias("daily_abs_amount_sum"),
     ])
 
     daily_features = collect_polars(daily_txns.group_by("UniqueID").agg([
@@ -450,7 +450,7 @@ def create_features(data_dir='data/inputs'):
         pl.col("daily_txn_count").quantile(0.9).alias("daily_txn_count_p90_all"),
         (pl.col("daily_txn_count") >= 5).sum().alias("high_volume_days_5_all"),
         (pl.col("daily_txn_count") >= 10).sum().alias("high_volume_days_10_all"),
-        pl.col("daily_txn_count").sort(descending=True).head(3).sum().alias("top3_daily_txn_count_all"),
+        pl.col("daily_txn_count").top_k(3).sum().alias("top3_daily_txn_count_all"),
         pl.col("daily_abs_amount_sum").mean().alias("daily_abs_amount_mean_all"),
         pl.col("daily_abs_amount_sum").max().alias("daily_abs_amount_max_all"),
     ]), pl, "daily burstiness features").with_columns([
@@ -469,7 +469,7 @@ def create_features(data_dir='data/inputs'):
         pl.col("daily_txn_count").quantile(0.9).alias("daily_txn_count_p90_3m"),
         (pl.col("daily_txn_count") >= 5).sum().alias("high_volume_days_5_3m"),
         (pl.col("daily_txn_count") >= 10).sum().alias("high_volume_days_10_3m"),
-        pl.col("daily_txn_count").sort(descending=True).head(3).sum().alias("top3_daily_txn_count_3m"),
+        pl.col("daily_txn_count").top_k(3).sum().alias("top3_daily_txn_count_3m"),
         pl.col("daily_abs_amount_sum").mean().alias("daily_abs_amount_mean_3m"),
         pl.col("daily_abs_amount_sum").max().alias("daily_abs_amount_max_3m"),
     ]), pl, "recent daily burstiness features").with_columns([
@@ -508,8 +508,8 @@ def create_features(data_dir='data/inputs'):
     account_txns = transactions.group_by(["UniqueID", "AccountID"]).agg([
         pl.col("TransactionAmount").len().alias("account_txn_count_all"),
         pl.col("TransactionAmount").filter(last_3m).len().alias("account_txn_count_3m"),
-        pl.col("TransactionAmount").abs().sum().alias("account_abs_amount_sum_all"),
-        pl.col("TransactionAmount").abs().filter(last_3m).sum().alias("account_abs_amount_sum_3m"),
+        pl.col("TransactionAmount").abs().sort().sum().alias("account_abs_amount_sum_all"),
+        pl.col("TransactionAmount").abs().filter(last_3m).sort().sum().alias("account_abs_amount_sum_3m"),
     ])
 
     account_features = collect_polars(account_txns.group_by("UniqueID").agg([
@@ -522,9 +522,9 @@ def create_features(data_dir='data/inputs'):
         pl.col("account_txn_count_3m").max().alias("primary_account_txn_count_3m"),
         pl.col("account_txn_count_3m").sum().alias("account_txn_count_sum_3m"),
         pl.col("account_abs_amount_sum_all").max().alias("primary_account_abs_amount_sum_all"),
-        pl.col("account_abs_amount_sum_all").sum().alias("account_abs_amount_sum_all"),
+        pl.col("account_abs_amount_sum_all").sort().sum().alias("account_abs_amount_sum_all"),
         pl.col("account_abs_amount_sum_3m").max().alias("primary_account_abs_amount_sum_3m"),
-        pl.col("account_abs_amount_sum_3m").sum().alias("account_abs_amount_sum_3m"),
+        pl.col("account_abs_amount_sum_3m").sort().sum().alias("account_abs_amount_sum_3m"),
     ]), pl, "account concentration features").with_columns([
         (pl.col("primary_account_txn_count_all") / (pl.col("account_txn_count_sum_all") + 0.001)).alias("primary_account_txn_share_all"),
         (pl.col("primary_account_txn_count_3m") / (pl.col("account_txn_count_sum_3m") + 0.001)).alias("primary_account_txn_share_3m"),

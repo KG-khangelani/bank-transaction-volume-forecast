@@ -402,7 +402,7 @@ def generate_new_code(
     for attempt in range(1, max_llm_failures + 1):
         try:
             response = client.models.generate_content(
-                model=os.environ.get("AGENT_LLM_MODEL", "gemma-4-31b-it"),
+                model=os.environ.get("AGENT_LLM_MODEL", "gemini-2.0-flash"),
                 contents=prompt,
             )
             return parse_code_blocks(response.text or "")
