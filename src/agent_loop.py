@@ -319,12 +319,41 @@ The evaluator and production training files are fixed. Do not output blocks for 
 `src/train.py`, `src/train_xgb.py`, `src/train_cat.py`, or `src/tune_lgbm.py`. A proposal that edits those
 files will be rejected because the proxy score would not prove final-pipeline improvement.
 
-Prefer conservative features based on already-aggregated counts, amounts, recency, activity density,
-and stable seasonal comparisons. Avoid one-row-per-customer rolling/window expressions such as
-`rolling_mean(...).over("UniqueID")`, because this autogen block runs after aggregation.
-The container Polars version does not support every horizontal helper. Do not use `pl.std_horizontal`.
-For horizontal sums, minima, and maxima, use explicit column arithmetic, `pl.min_horizontal`, or
-`pl.max_horizontal` over existing numeric columns.
+The autogen block is replaced wholesale on every attempt. Only reference columns listed in the
+schema above or columns created earlier in the same generated block. If one new feature depends on
+another new feature, create them in separate, sequential `features = features.with_columns(...)`
+calls so Polars can resolve the dependency.
+
+UNTRIED DIRECTIONS (strongly prefer these over count combinations):
+- `stmt_balance_mean_3m`, `stmt_balance_mean_1m`, `stmt_balance_mean` — balance context. Ratio of
+  balance to transaction volume, or balance change signals.
+- `txn_amount_sum_last_3m`, `txn_amount_sum_last_1m` — amount-based density: amount per transaction,
+  amount per active day, amount consistency over time.
+- `target_lag_1yr`, `target_lag_2yr`, `yoy_growth_ratio` — year-on-year anchors. These are the
+  ACTUAL prior-year counts for the target period and have never been combined with recent activity.
+- `fin_interest_income_mean`, `fin_interest_revenue_mean` — financial engagement signals (untried).
+- `reversal_ratio`, `bounced_ratio` — transaction quality/reliability features (untried).
+- `mom_accel_1`, `mom_accel_2`, `mom_accel_3`, `mom_jerk` — momentum / acceleration of activity
+  trend (these are pre-computed but rarely appear in top features, may benefit from combinations).
+- Variance / spread of monthly counts: use `txn_count_m1` through `txn_count_m12` to compute
+  the standard deviation or range of monthly activity as a measure of consistency.
+- `credit_to_debit_ratio`, `card_to_cash_ratio`, `balance_velocity` — behavioural ratios (untried).
+
+WHAT HAS ALREADY BEEN THOROUGHLY TRIED AND CONSISTENTLY FAILS (do not repeat):
+- Any additive combination of `txn_count_last_1m`, `txn_count_last_3m`, `txn_count_m1` — these are
+  already strongly correlated and adding them together brings no new signal.
+- Log transforms of the top count features (log_txn_count_last_1m etc.) — tried, no benefit.
+- Differences between rolling and calendar month counts (`txn_count_last_1m - txn_count_m1`) — tried.
+- Subtracting batch/system transactions from total to get "human" volume — tried, no benefit.
+- Summing type-based counts (`txn_type_transfers_payments_count_3m`, `txn_type_deposits_count_3m`).
+- Multi-horizon sums like `txn_count_last_3m + txn_count_last_6m` or decompositions into 3m slices.
+
+AVOID:
+- Avoid one-row-per-customer rolling/window expressions such as `rolling_mean(...).over("UniqueID")`,
+  because this autogen block runs after aggregation.
+- The container Polars version does not support every horizontal helper. Do not use `pl.std_horizontal`.
+  For horizontal sums, minima, and maxima, use explicit column arithmetic, `pl.min_horizontal`, or
+  `pl.max_horizontal` over existing numeric columns.
 
 DATA AWARENESS & REFLECTION:
 If you are unsure, output only a `python:analyze` block. It will run with a pandas dataframe named `df`
@@ -333,7 +362,10 @@ containing Train.csv merged with engineered features.
 CRITICAL RULES:
 1. Do not include import statements inside injected code blocks.
 2. Do not define helper functions unless absolutely necessary.
-3. Output markdown code blocks exactly like:
+3. Use ONLY `features = features.with_columns([...])` to add new columns. NEVER use `features.select()`,
+   `features.drop()`, or `features.rename()` — these remove existing columns from the pipeline and will
+   crash downstream code. Only `with_columns` is safe.
+4. Output markdown code blocks exactly like:
 
 ```python:src/features.py
 features = features.with_columns([
