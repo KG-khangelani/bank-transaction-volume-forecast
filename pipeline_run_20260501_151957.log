@@ -1,0 +1,882 @@
+Starting GPU-first pipeline (LightGBM + CatBoost GPU + XGBoost CUDA + guarded experimental stacking)...
+Experimental stacks are report-only; final submission_stacked.csv will use the public-safe tree stack.
+
+--- PHASE 0: Feature Engineering ---
+
+==================================================
+Running src/features.py...
+==================================================
+Loading datasets with Polars...
+Engineering temporal transaction features...
+Engineering daily burstiness features...
+Engineering active-day gap features...
+Engineering account concentration features...
+Engineering financial features...
+Engineering demographic features...
+Merging features...
+Features saved to data/processed/all_features.parquet with shape (11944, 303)
+
+==================================================
+Running src/features_rolling.py...
+==================================================
+Loading datasets for rolling sidecar features...
+Building rolling snapshot for cutoff 2014-11-01...
+Building rolling snapshot for cutoff 2014-12-01...
+Building rolling snapshot for cutoff 2015-01-01...
+Building rolling snapshot for cutoff 2015-02-01...
+Building rolling snapshot for cutoff 2015-03-01...
+Building rolling snapshot for cutoff 2015-04-01...
+Building rolling snapshot for cutoff 2015-05-01...
+Building rolling snapshot for cutoff 2015-06-01...
+Building rolling snapshot for cutoff 2015-07-01...
+Building rolling snapshot for cutoff 2015-08-01...
+Building rolling snapshot for cutoff 2015-11-01...
+Saved rolling training features to data/processed/rolling_train_features.parquet with shape (83600, 313)
+Saved rolling production features to data/processed/rolling_production_features.parquet with shape (11944, 308)
+
+--- PHASE 1: Training Base Models & Saving OOF Predictions ---
+
+==================================================
+Running src/train.py...
+==================================================
+Loading data for training...
+Merging train labels with engineered features...
+Training LightGBM model on 8360 rows and 301 features...
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+Fold 1 Validation RMSLE: 0.3592
+Fold 2 Validation RMSLE: 0.3908
+Fold 3 Validation RMSLE: 0.3789
+Fold 4 Validation RMSLE: 0.3719
+Fold 5 Validation RMSLE: 0.4011
+Overall OOF RMSLE: 0.3807
+OOF predictions saved to data/processed/oof_lgbm.csv
+Models successfully saved to 'models/' directory.
+
+==================================================
+Running src/train_cat.py...
+==================================================
+Loading data for CatBoost training...
+Merging train labels with engineered features...
+Training CatBoost model on 8360 rows and 301 features...
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+0:	learn: 1.2302969	test: 1.2341319	best: 1.2341319 (0)	total: 437ms	remaining: 36m 26s
+500:	learn: 0.3379520	test: 0.3759710	best: 0.3758120 (460)	total: 1m 28s	remaining: 13m 18s
+bestTest = 0.3751896283
+bestIteration = 710
+Shrink model to first 711 iterations.
+Fold 1 Validation RMSLE: 0.3752
+0:	learn: 1.2360994	test: 1.2142777	best: 1.2142777 (0)	total: 171ms	remaining: 14m 16s
+500:	learn: 0.3336322	test: 0.3976653	best: 0.3976235 (433)	total: 1m 44s	remaining: 15m 39s
+bestTest = 0.3975812288
+bestIteration = 508
+Shrink model to first 509 iterations.
+Fold 2 Validation RMSLE: 0.3976
+0:	learn: 1.2328078	test: 1.2262152	best: 1.2262152 (0)	total: 180ms	remaining: 15m 2s
+500:	learn: 0.3365471	test: 0.3915304	best: 0.3914842 (497)	total: 2m 13s	remaining: 19m 55s
+1000:	learn: 0.3095108	test: 0.3872588	best: 0.3872588 (1000)	total: 5m 21s	remaining: 21m 23s
+1500:	learn: 0.2945983	test: 0.3860339	best: 0.3859192 (1470)	total: 7m 47s	remaining: 18m 8s
+bestTest = 0.3859192128
+bestIteration = 1470
+Shrink model to first 1471 iterations.
+Fold 3 Validation RMSLE: 0.3859
+0:	learn: 1.2333825	test: 1.2237298	best: 1.2237298 (0)	total: 251ms	remaining: 20m 54s
+500:	learn: 0.3357186	test: 0.3779991	best: 0.3779991 (500)	total: 2m 52s	remaining: 25m 52s
+1000:	learn: 0.3027268	test: 0.3719463	best: 0.3719406 (999)	total: 5m 21s	remaining: 21m 23s
+1500:	learn: 0.2834564	test: 0.3695887	best: 0.3694854 (1462)	total: 7m 30s	remaining: 17m 29s
+2000:	learn: 0.2704768	test: 0.3686105	best: 0.3685280 (1934)	total: 10m 5s	remaining: 15m 7s
+2500:	learn: 0.2608711	test: 0.3681203	best: 0.3680982 (2486)	total: 12m 27s	remaining: 12m 26s
+bestTest = 0.3680505343
+bestIteration = 2613
+Shrink model to first 2614 iterations.
+Fold 4 Validation RMSLE: 0.3681
+0:	learn: 1.2242969	test: 1.2580888	best: 1.2580888 (0)	total: 230ms	remaining: 19m 9s
+500:	learn: 0.3314657	test: 0.4063658	best: 0.4063462 (497)	total: 2m 42s	remaining: 24m 17s
+bestTest = 0.4045516856
+bestIteration = 733
+Shrink model to first 734 iterations.
+Fold 5 Validation RMSLE: 0.4046
+Overall CatBoost OOF RMSLE: 0.3865
+OOF predictions saved to data/processed/oof_catboost.csv
+CatBoost Models successfully saved to 'models/' directory.
+
+==================================================
+Running src/train_xgb.py...
+==================================================
+Loading data for XGBoost training...
+Merging train labels with engineered features...
+Training XGBoost model on 8360 rows and 301 features...
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+[0]	train-rmse:1.24005	val-rmse:1.24423
+[500]	train-rmse:0.18956	val-rmse:0.36567
+[1000]	train-rmse:0.13174	val-rmse:0.36331
+[1199]	train-rmse:0.11224	val-rmse:0.36319
+Fold 1 Validation RMSLE: 0.3632
+[0]	train-rmse:1.24530	val-rmse:1.22361
+[500]	train-rmse:0.18454	val-rmse:0.39003
+[825]	train-rmse:0.14585	val-rmse:0.38975
+Fold 2 Validation RMSLE: 0.3898
+[0]	train-rmse:1.24217	val-rmse:1.23610
+[500]	train-rmse:0.18449	val-rmse:0.38213
+[960]	train-rmse:0.12953	val-rmse:0.38142
+Fold 3 Validation RMSLE: 0.3814
+[0]	train-rmse:1.24274	val-rmse:1.23339
+[500]	train-rmse:0.18655	val-rmse:0.37657
+[1000]	train-rmse:0.12881	val-rmse:0.37485
+[1081]	train-rmse:0.12020	val-rmse:0.37486
+Fold 4 Validation RMSLE: 0.3749
+[0]	train-rmse:1.23402	val-rmse:1.26812
+[500]	train-rmse:0.17988	val-rmse:0.40610
+[705]	train-rmse:0.15256	val-rmse:0.40586
+Fold 5 Validation RMSLE: 0.4059
+Overall XGBoost OOF RMSLE: 0.3833
+OOF predictions saved to data/processed/oof_xgb.csv
+
+==================================================
+Running src/train_xgb_deep.py...
+==================================================
+Loading data for deep XGBoost training...
+Merging train labels with engineered features...
+Training deep XGBoost model on 8360 rows and 301 features...
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+[0]	train-rmse:1.24245	val-rmse:1.24642
+[500]	train-rmse:0.22363	val-rmse:0.36702
+[1000]	train-rmse:0.16597	val-rmse:0.36302
+[1224]	train-rmse:0.14650	val-rmse:0.36300
+Fold 1 deep XGBoost Validation RMSLE: 0.3630
+[0]	train-rmse:1.24768	val-rmse:1.22586
+[500]	train-rmse:0.21680	val-rmse:0.39388
+[1000]	train-rmse:0.16105	val-rmse:0.39214
+[1008]	train-rmse:0.16040	val-rmse:0.39211
+Fold 2 deep XGBoost Validation RMSLE: 0.3921
+[0]	train-rmse:1.24456	val-rmse:1.23812
+[500]	train-rmse:0.21806	val-rmse:0.38214
+[1000]	train-rmse:0.16045	val-rmse:0.37920
+[1343]	train-rmse:0.13189	val-rmse:0.37909
+Fold 3 deep XGBoost Validation RMSLE: 0.3791
+[0]	train-rmse:1.24521	val-rmse:1.23581
+[500]	train-rmse:0.21861	val-rmse:0.37658
+[1000]	train-rmse:0.16245	val-rmse:0.37385
+[1500]	train-rmse:0.12095	val-rmse:0.37368
+[1546]	train-rmse:0.11758	val-rmse:0.37375
+Fold 4 deep XGBoost Validation RMSLE: 0.3738
+[0]	train-rmse:1.23648	val-rmse:1.27063
+[500]	train-rmse:0.21289	val-rmse:0.40313
+[754]	train-rmse:0.17816	val-rmse:0.40333
+Fold 5 deep XGBoost Validation RMSLE: 0.4033
+Overall deep XGBoost OOF RMSLE: 0.3825
+OOF predictions saved to data/processed/oof_xgb_deep.csv
+
+==================================================
+Running src/train_band_moe.py...
+==================================================
+Training banded mixture-of-experts sidecar with CUDA XGBoost...
+Training band_moe on 8360 rows and 301 features...
+Target band counts:
+  <20: 1382
+  20-74: 1980
+  75-199: 2886
+  200-499: 1827
+  500+: 285
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+--- Band MOE fold 1 ---
+[0]	train-mlogloss:1.40655	val-mlogloss:1.40787
+[414]	train-mlogloss:0.18291	val-mlogloss:0.42900
+[0]	train_band0-rmse:0.53933	val_band0-rmse:0.55046
+[500]	train_band0-rmse:0.18526	val_band0-rmse:0.35967
+[701]	train_band0-rmse:0.14859	val_band0-rmse:0.35852
+[0]	train_band1-rmse:0.37885	val_band1-rmse:0.37684
+[317]	train_band1-rmse:0.11332	val_band1-rmse:0.25972
+[0]	train_band2-rmse:0.27113	val_band2-rmse:0.27046
+[445]	train_band2-rmse:0.05073	val_band2-rmse:0.16572
+[0]	train_band3-rmse:0.24005	val_band3-rmse:0.24769
+[426]	train_band3-rmse:0.03233	val_band3-rmse:0.14248
+[0]	train_band4-rmse:0.24290	val_band4-rmse:0.24366
+[500]	train_band4-rmse:0.01417	val_band4-rmse:0.14263
+[614]	train_band4-rmse:0.01021	val_band4-rmse:0.14283
+Fold 1 band_moe RMSLE: 0.3568
+--- Band MOE fold 2 ---
+[0]	train-mlogloss:1.40576	val-mlogloss:1.40834
+[393]	train-mlogloss:0.18277	val-mlogloss:0.46551
+[0]	train_band0-rmse:0.54511	val_band0-rmse:0.52680
+[251]	train_band0-rmse:0.23424	val_band0-rmse:0.42300
+[0]	train_band1-rmse:0.38030	val_band1-rmse:0.37110
+[384]	train_band1-rmse:0.10876	val_band1-rmse:0.23493
+[0]	train_band2-rmse:0.27148	val_band2-rmse:0.26928
+[367]	train_band2-rmse:0.05930	val_band2-rmse:0.17039
+[0]	train_band3-rmse:0.24255	val_band3-rmse:0.23742
+[261]	train_band3-rmse:0.05200	val_band3-rmse:0.16450
+[0]	train_band4-rmse:0.25320	val_band4-rmse:0.19749
+[277]	train_band4-rmse:0.03444	val_band4-rmse:0.13247
+Fold 2 band_moe RMSLE: 0.3949
+--- Band MOE fold 3 ---
+[0]	train-mlogloss:1.40657	val-mlogloss:1.40823
+[326]	train-mlogloss:0.21052	val-mlogloss:0.46185
+[0]	train_band0-rmse:0.54149	val_band0-rmse:0.54044
+[500]	train_band0-rmse:0.17667	val_band0-rmse:0.36826
+[533]	train_band0-rmse:0.16984	val_band0-rmse:0.36828
+[0]	train_band1-rmse:0.37611	val_band1-rmse:0.38795
+[304]	train_band1-rmse:0.11525	val_band1-rmse:0.25658
+[0]	train_band2-rmse:0.27037	val_band2-rmse:0.27376
+[327]	train_band2-rmse:0.06368	val_band2-rmse:0.17459
+[0]	train_band3-rmse:0.24092	val_band3-rmse:0.24368
+[366]	train_band3-rmse:0.03832	val_band3-rmse:0.15374
+[0]	train_band4-rmse:0.23685	val_band4-rmse:0.26617
+[500]	train_band4-rmse:0.01332	val_band4-rmse:0.17082
+[814]	train_band4-rmse:0.00695	val_band4-rmse:0.17041
+Fold 3 band_moe RMSLE: 0.3850
+--- Band MOE fold 4 ---
+[0]	train-mlogloss:1.40642	val-mlogloss:1.40818
+[360]	train-mlogloss:0.20004	val-mlogloss:0.45136
+[0]	train_band0-rmse:0.54864	val_band0-rmse:0.51267
+[365]	train_band0-rmse:0.21109	val_band0-rmse:0.36469
+[0]	train_band1-rmse:0.37904	val_band1-rmse:0.37650
+[405]	train_band1-rmse:0.10272	val_band1-rmse:0.24131
+[0]	train_band2-rmse:0.27161	val_band2-rmse:0.26887
+[427]	train_band2-rmse:0.05401	val_band2-rmse:0.16120
+[0]	train_band3-rmse:0.24108	val_band3-rmse:0.24340
+[389]	train_band3-rmse:0.03649	val_band3-rmse:0.15220
+[0]	train_band4-rmse:0.24242	val_band4-rmse:0.24641
+[380]	train_band4-rmse:0.02466	val_band4-rmse:0.13238
+Fold 4 band_moe RMSLE: 0.3768
+--- Band MOE fold 5 ---
+[0]	train-mlogloss:1.40604	val-mlogloss:1.40806
+[347]	train-mlogloss:0.20143	val-mlogloss:0.46982
+[0]	train_band0-rmse:0.53142	val_band0-rmse:0.58035
+[500]	train_band0-rmse:0.17921	val_band0-rmse:0.39381
+[620]	train_band0-rmse:0.15945	val_band0-rmse:0.39519
+[0]	train_band1-rmse:0.37734	val_band1-rmse:0.38326
+[362]	train_band1-rmse:0.10773	val_band1-rmse:0.24211
+[0]	train_band2-rmse:0.27008	val_band2-rmse:0.27490
+[362]	train_band2-rmse:0.06162	val_band2-rmse:0.17304
+[0]	train_band3-rmse:0.24248	val_band3-rmse:0.23748
+[500]	train_band3-rmse:0.02446	val_band3-rmse:0.15252
+[631]	train_band3-rmse:0.01630	val_band3-rmse:0.15251
+[0]	train_band4-rmse:0.23857	val_band4-rmse:0.26134
+[500]	train_band4-rmse:0.01454	val_band4-rmse:0.15783
+[735]	train_band4-rmse:0.00824	val_band4-rmse:0.15780
+Fold 5 band_moe RMSLE: 0.4029
+Overall band_moe OOF RMSLE: 0.383625
+OOF predictions saved to data/processed/oof_band_moe.csv
+Band MOE residual band report saved to data/processed/band_moe_residual_bands.csv
+
+==================================================
+Running src/train_rolling.py...
+==================================================
+Loading rolling sidecar feature artifacts...
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+--- Rolling fold 1 ---
+[0]	train-rmse:1.43956	val-rmse:1.25151
+[500]	train-rmse:0.36785	val-rmse:0.36756
+[938]	train-rmse:0.34504	val-rmse:0.36711
+Fold 1 rolling_direct RMSLE: 0.3671
+[0]	train-rmse:1.05623
+[500]	train-rmse:0.29464
+[1000]	train-rmse:0.27355
+[1199]	train-rmse:0.26647
+[0]	train-rmse:0.38219
+[500]	train-rmse:0.11836
+[1000]	train-rmse:0.11147
+[1199]	train-rmse:0.10915
+Fold 1 rolling_decomp RMSLE: 0.3701
+[0]	train-rmse:1.43957	val-rmse:1.25144
+[500]	train-rmse:0.36769	val-rmse:0.36675
+[934]	train-rmse:0.34549	val-rmse:0.36603
+[0]	train-logloss:0.53369	val-logloss:0.54985
+[500]	train-logloss:0.09865	val-logloss:0.13882
+[623]	train-logloss:0.09254	val-logloss:0.13872
+[0]	train-rmse:0.34795	val-rmse:0.36196
+[500]	train-rmse:0.10916	val-rmse:0.15595
+[587]	train-rmse:0.10426	val-rmse:0.15598
+Fold 1 rolling_tail200 RMSLE: 0.3631
+[0]	train-rmse:1.43959	val-rmse:1.25150
+[500]	train-rmse:0.36788	val-rmse:0.36732
+[768]	train-rmse:0.35319	val-rmse:0.36699
+[0]	train-logloss:0.11248	val-logloss:0.13485
+[328]	train-logloss:0.01886	val-logloss:0.03461
+[0]	train-rmse:0.22866	val-rmse:0.24456
+[432]	train-rmse:0.04404	val-rmse:0.13571
+Fold 1 rolling_tail500 RMSLE: 0.3671
+--- Rolling fold 2 ---
+[0]	train-rmse:1.43826	val-rmse:1.23239
+[500]	train-rmse:0.36480	val-rmse:0.39127
+[1000]	train-rmse:0.34052	val-rmse:0.38890
+[1001]	train-rmse:0.34046	val-rmse:0.38889
+Fold 2 rolling_direct RMSLE: 0.3889
+[0]	train-rmse:1.05298
+[500]	train-rmse:0.29197
+[1000]	train-rmse:0.27278
+[1199]	train-rmse:0.26606
+[0]	train-rmse:0.38136
+[500]	train-rmse:0.11712
+[1000]	train-rmse:0.11056
+[1199]	train-rmse:0.10846
+Fold 2 rolling_decomp RMSLE: 0.3970
+[0]	train-rmse:1.43825	val-rmse:1.23250
+[500]	train-rmse:0.36462	val-rmse:0.39389
+[1000]	train-rmse:0.33978	val-rmse:0.39072
+[1277]	train-rmse:0.32940	val-rmse:0.39037
+[0]	train-logloss:0.53244	val-logloss:0.55003
+[500]	train-logloss:0.09730	val-logloss:0.14013
+[1000]	train-logloss:0.07615	val-logloss:0.13957
+[1073]	train-logloss:0.07376	val-logloss:0.14001
+[0]	train-rmse:0.34733	val-rmse:0.34572
+[500]	train-rmse:0.10812	val-rmse:0.17714
+[506]	train-rmse:0.10773	val-rmse:0.17716
+Fold 2 rolling_tail200 RMSLE: 0.3883
+[0]	train-rmse:1.43831	val-rmse:1.23249
+[500]	train-rmse:0.36445	val-rmse:0.39423
+[815]	train-rmse:0.34765	val-rmse:0.39270
+[0]	train-logloss:0.11319	val-logloss:0.13541
+[348]	train-logloss:0.01845	val-logloss:0.04541
+[0]	train-rmse:0.23413	val-rmse:0.19444
+[301]	train-rmse:0.05608	val-rmse:0.12509
+Fold 2 rolling_tail500 RMSLE: 0.3930
+--- Rolling fold 3 ---
+[0]	train-rmse:1.43914	val-rmse:1.24502
+[500]	train-rmse:0.37218	val-rmse:0.38822
+[947]	train-rmse:0.35067	val-rmse:0.38722
+Fold 3 rolling_direct RMSLE: 0.3872
+[0]	train-rmse:1.05529
+[500]	train-rmse:0.29789
+[1000]	train-rmse:0.27867
+[1199]	train-rmse:0.27239
+[0]	train-rmse:0.38125
+[500]	train-rmse:0.11880
+[1000]	train-rmse:0.11240
+[1199]	train-rmse:0.11021
+Fold 3 rolling_decomp RMSLE: 0.3933
+[0]	train-rmse:1.43915	val-rmse:1.24497
+[500]	train-rmse:0.37156	val-rmse:0.38771
+[874]	train-rmse:0.35363	val-rmse:0.38616
+[0]	train-logloss:0.52968	val-logloss:0.54956
+[427]	train-logloss:0.10247	val-logloss:0.14429
+[0]	train-rmse:0.34969	val-rmse:0.36654
+[425]	train-rmse:0.11150	val-rmse:0.17230
+Fold 3 rolling_tail200 RMSLE: 0.3903
+[0]	train-rmse:1.43914	val-rmse:1.24504
+[500]	train-rmse:0.37196	val-rmse:0.38735
+[825]	train-rmse:0.35591	val-rmse:0.38656
+[0]	train-logloss:0.11224	val-logloss:0.13394
+[339]	train-logloss:0.01865	val-logloss:0.03167
+[0]	train-rmse:0.22980	val-rmse:0.26712
+[381]	train-rmse:0.04547	val-rmse:0.17860
+Fold 3 rolling_tail500 RMSLE: 0.3864
+--- Rolling fold 4 ---
+[0]	train-rmse:1.44176	val-rmse:1.24481
+[500]	train-rmse:0.36683	val-rmse:0.37590
+[689]	train-rmse:0.35593	val-rmse:0.37536
+Fold 4 rolling_direct RMSLE: 0.3754
+[0]	train-rmse:1.05952
+[500]	train-rmse:0.29310
+[1000]	train-rmse:0.27284
+[1199]	train-rmse:0.26663
+[0]	train-rmse:0.38199
+[500]	train-rmse:0.11784
+[1000]	train-rmse:0.11137
+[1199]	train-rmse:0.10934
+Fold 4 rolling_decomp RMSLE: 0.3802
+[0]	train-rmse:1.44177	val-rmse:1.24474
+[500]	train-rmse:0.36631	val-rmse:0.37709
+[915]	train-rmse:0.34501	val-rmse:0.37605
+[0]	train-logloss:0.52712	val-logloss:0.55055
+[500]	train-logloss:0.09526	val-logloss:0.14298
+[624]	train-logloss:0.08922	val-logloss:0.14336
+[0]	train-rmse:0.34816	val-rmse:0.36907
+[500]	train-rmse:0.10751	val-rmse:0.16960
+[607]	train-rmse:0.10129	val-rmse:0.16966
+Fold 4 rolling_tail200 RMSLE: 0.3776
+[0]	train-rmse:1.44176	val-rmse:1.24472
+[500]	train-rmse:0.36660	val-rmse:0.37516
+[997]	train-rmse:0.34272	val-rmse:0.37398
+[0]	train-logloss:0.11034	val-logloss:0.13378
+[388]	train-logloss:0.01768	val-logloss:0.03453
+[0]	train-rmse:0.23165	val-rmse:0.24661
+[500]	train-rmse:0.03763	val-rmse:0.13100
+[803]	train-rmse:0.02036	val-rmse:0.13078
+Fold 4 rolling_tail500 RMSLE: 0.3749
+--- Rolling fold 5 ---
+[0]	train-rmse:1.42976	val-rmse:1.27374
+[500]	train-rmse:0.36332	val-rmse:0.39692
+[639]	train-rmse:0.35484	val-rmse:0.39669
+Fold 5 rolling_direct RMSLE: 0.3967
+[0]	train-rmse:1.04691
+[500]	train-rmse:0.29011
+[1000]	train-rmse:0.26870
+[1199]	train-rmse:0.26201
+[0]	train-rmse:0.37977
+[500]	train-rmse:0.11694
+[1000]	train-rmse:0.11021
+[1199]	train-rmse:0.10797
+Fold 5 rolling_decomp RMSLE: 0.4037
+[0]	train-rmse:1.42976	val-rmse:1.27359
+[500]	train-rmse:0.36305	val-rmse:0.39810
+[786]	train-rmse:0.34782	val-rmse:0.39717
+[0]	train-logloss:0.53230	val-logloss:0.55072
+[291]	train-logloss:0.11058	val-logloss:0.17296
+[0]	train-rmse:0.34875	val-rmse:0.36557
+[500]	train-rmse:0.10778	val-rmse:0.16909
+[536]	train-rmse:0.10564	val-rmse:0.16914
+Fold 5 rolling_tail200 RMSLE: 0.3946
+[0]	train-rmse:1.42974	val-rmse:1.27364
+[500]	train-rmse:0.36333	val-rmse:0.39688
+[766]	train-rmse:0.34879	val-rmse:0.39608
+[0]	train-logloss:0.11291	val-logloss:0.13517
+[328]	train-logloss:0.01945	val-logloss:0.03880
+[0]	train-rmse:0.22631	val-rmse:0.26156
+[500]	train-rmse:0.03820	val-rmse:0.14096
+[569]	train-rmse:0.03371	val-rmse:0.14087
+Fold 5 rolling_tail500 RMSLE: 0.3967
+rolling_direct OOF RMSLE: 0.383196
+Saved OOF predictions to data/processed/oof_rolling_direct.csv
+rolling_decomp OOF RMSLE: 0.389054
+Saved OOF predictions to data/processed/oof_rolling_decomp.csv
+rolling_tail200 OOF RMSLE: 0.382955
+Saved OOF predictions to data/processed/oof_rolling_tail200.csv
+rolling_tail500 OOF RMSLE: 0.383771
+Saved OOF predictions to data/processed/oof_rolling_tail500.csv
+Saved rolling OOF score summary to data/processed/rolling_oof_scores.csv
+Training final rolling sidecar models on all historical rolling rows...
+[0]	train-rmse:1.43776
+[500]	train-rmse:0.37285
+[838]	train-rmse:0.35645
+[0]	train-rmse:1.05421
+[500]	train-rmse:0.29844
+[1000]	train-rmse:0.28007
+[1199]	train-rmse:0.27416
+[0]	train-rmse:0.38131
+[500]	train-rmse:0.11962
+[1000]	train-rmse:0.11378
+[1199]	train-rmse:0.11176
+[0]	train-rmse:1.43772
+[500]	train-rmse:0.37318
+[815]	train-rmse:0.35790
+[0]	train-logloss:0.53106
+[500]	train-logloss:0.10187
+[523]	train-logloss:0.10074
+[0]	train-rmse:0.34838
+[436]	train-rmse:0.11715
+[0]	train-rmse:1.43773
+[500]	train-rmse:0.37316
+[715]	train-rmse:0.36164
+[0]	train-logloss:0.11211
+[239]	train-logloss:0.02272
+[0]	train-rmse:0.23016
+[332]	train-rmse:0.05691
+Saved rolling model metadata to data/processed/rolling_preprocessor.joblib
+
+==================================================
+Running src/train_hightail.py...
+==================================================
+Training high-tail correction path with threshold >= 200 transactions.
+Loading train labels and engineered features...
+Some validation strata are too small after collapsing; falling back to target-band stratification.
+--- Fold 1 ---
+[0]	train-rmse:1.24007	val-rmse:1.24427
+[500]	train-rmse:0.21185	val-rmse:0.36590
+[1000]	train-rmse:0.15574	val-rmse:0.36333
+[1111]	train-rmse:0.14575	val-rmse:0.36334
+[0]	train-logloss:0.55006	val-logloss:0.55033
+[500]	train-logloss:0.06895	val-logloss:0.14116
+[520]	train-logloss:0.06695	val-logloss:0.14160
+[0]	train_high-rmse:0.36121	val_high-rmse:0.36147
+[500]	train_high-rmse:0.05439	val_high-rmse:0.16023
+[611]	train_high-rmse:0.04403	val_high-rmse:0.16021
+Fold 1 general RMSLE: 0.3633
+Fold 1 high-tail blend RMSLE: 0.3629
+--- Fold 2 ---
+[0]	train-rmse:1.24526	val-rmse:1.22350
+[500]	train-rmse:0.20537	val-rmse:0.38975
+[813]	train-rmse:0.16929	val-rmse:0.38907
+[0]	train-logloss:0.55012	val-logloss:0.55044
+[473]	train-logloss:0.06903	val-logloss:0.14406
+[0]	train_high-rmse:0.36492	val_high-rmse:0.34573
+[349]	train_high-rmse:0.06987	val_high-rmse:0.18640
+Fold 2 general RMSLE: 0.3891
+Fold 2 high-tail blend RMSLE: 0.3886
+--- Fold 3 ---
+[0]	train-rmse:1.24211	val-rmse:1.23601
+[500]	train-rmse:0.20507	val-rmse:0.38070
+[1000]	train-rmse:0.15040	val-rmse:0.37915
+[1002]	train-rmse:0.15015	val-rmse:0.37914
+[0]	train-logloss:0.55012	val-logloss:0.54977
+[388]	train-logloss:0.07868	val-logloss:0.14524
+[0]	train_high-rmse:0.36000	val_high-rmse:0.36616
+[500]	train_high-rmse:0.05230	val_high-rmse:0.17639
+[699]	train_high-rmse:0.03612	val_high-rmse:0.17635
+Fold 3 general RMSLE: 0.3791
+Fold 3 high-tail blend RMSLE: 0.3869
+--- Fold 4 ---
+[0]	train-rmse:1.24272	val-rmse:1.23356
+[500]	train-rmse:0.20760	val-rmse:0.37245
+[1000]	train-rmse:0.15231	val-rmse:0.37087
+[1174]	train-rmse:0.13681	val-rmse:0.37074
+[0]	train-logloss:0.55004	val-logloss:0.55059
+[394]	train-logloss:0.07845	val-logloss:0.14907
+[0]	train_high-rmse:0.35938	val_high-rmse:0.36893
+[500]	train_high-rmse:0.05396	val_high-rmse:0.16790
+[575]	train_high-rmse:0.04708	val_high-rmse:0.16789
+Fold 4 general RMSLE: 0.3707
+Fold 4 high-tail blend RMSLE: 0.3767
+--- Fold 5 ---
+[0]	train-rmse:1.23407	val-rmse:1.26831
+[500]	train-rmse:0.20028	val-rmse:0.40728
+[571]	train-rmse:0.19027	val-rmse:0.40719
+[0]	train-logloss:0.54979	val-logloss:0.55086
+[275]	train-logloss:0.08791	val-logloss:0.17606
+[0]	train_high-rmse:0.36030	val_high-rmse:0.36472
+[500]	train_high-rmse:0.05314	val_high-rmse:0.17374
+[713]	train_high-rmse:0.03559	val_high-rmse:0.17373
+Fold 5 general RMSLE: 0.4072
+Fold 5 high-tail blend RMSLE: 0.4070
+Overall high-tail blend OOF RMSLE: 0.3847
+OOF predictions saved to data/processed/oof_hightail.csv
+High-tail residual band report saved to data/processed/hightail_residual_bands.csv
+
+--- PHASE 2: Generating Base Model Test Predictions ---
+
+==================================================
+Running src/predict.py...
+==================================================
+Loading test data and features...
+Merging test with engineered features...
+Loading models and making predictions...
+Saved log-space test predictions to data/processed/test_pred_lgbm.csv
+Saved log-space Zindi submission to submission.csv
+Successfully generated submission.csv
+
+==================================================
+Running src/predict_cat.py...
+==================================================
+Loading test data and features...
+Merging test with engineered features...
+Loading CatBoost models and making predictions...
+Saved log-space test predictions to data/processed/test_pred_catboost.csv
+Saved log-space Zindi submission to submission_catboost.csv
+Successfully generated submission_catboost.csv
+
+==================================================
+Running src/predict_xgb.py...
+==================================================
+Loading test data for XGBoost inference...
+Found 5 XGBoost folds for ensembling...
+Saved log-space test predictions to data/processed/test_pred_xgb.csv
+Saved log-space Zindi submission to submission_xgb.csv
+XGBoost submission saved to submission_xgb.csv
+
+==================================================
+Running src/predict_xgb_deep.py...
+==================================================
+Loading test data for deep XGBoost inference...
+Found 5 deep XGBoost folds for ensembling...
+Saved log-space test predictions to data/processed/test_pred_xgb_deep.csv
+Saved log-space Zindi submission to submission_xgb_deep.csv
+Deep XGBoost submission saved to submission_xgb_deep.csv
+
+==================================================
+Running src/predict_band_moe.py...
+==================================================
+Loading test data and engineered features for band_moe inference...
+Saved log-space test predictions to data/processed/test_pred_band_moe.csv
+Saved log-space Zindi submission to submission_band_moe.csv
+Band MOE submission saved to submission_band_moe.csv
+
+==================================================
+Running src/predict_rolling.py...
+==================================================
+Loading rolling production features and final sidecar models...
+Saved log-space test predictions to data/processed/test_pred_rolling_direct.csv
+Saved log-space Zindi submission to submission_rolling_direct.csv
+Saved log-space test predictions to data/processed/test_pred_rolling_decomp.csv
+Saved log-space Zindi submission to submission_rolling_decomp.csv
+Saved log-space test predictions to data/processed/test_pred_rolling_tail200.csv
+Saved log-space Zindi submission to submission_rolling_tail200.csv
+Saved log-space test predictions to data/processed/test_pred_rolling_tail500.csv
+Saved log-space Zindi submission to submission_rolling_tail500.csv
+
+==================================================
+Running src/predict_hightail.py...
+==================================================
+Loading test data and engineered features for high-tail inference...
+Saved log-space test predictions to data/processed/test_pred_hightail.csv
+Saved log-space Zindi submission to submission_hightail.csv
+High-tail submission saved to submission_hightail.csv
+
+--- PHASE 3: Running Stack Ablations & Generating Final Submission ---
+
+==================================================
+Running src/stacking.py...
+==================================================
+Loading OOF predictions and training data for stacking ablations...
+Adversarial train/test classifier AUC: 0.5063; using top test-like train rows as a stack stress holdout.
+High-tail correction OOF available for experimental validation.
+Rolling sidecar variants available for experimental validation: Rolling direct, Rolling decomposition, Rolling high-tail >=200, Rolling high-tail >=500
+Banded mixture-of-experts OOF available for experimental validation.
+Event temporal OOF files exist but RUN_EVENT_TEMPORAL=1 or ALLOW_EVENT_TEMPORAL_STACK=1 is not set; skipping event_temporal stack scenarios.
+Seed-bag OOF files exist but RUN_SEED_BAG=1 or ALLOW_SEED_BAG_STACK=1 is not set; skipping seed-bag stack scenarios.
+No corrected PyTorch variant OOF files found; skipping PyTorch stack scenarios.
+lgbm_only | LightGBM OOF RMSLE: 0.3807
+lgbm_only | legacy stacked OOF RMSLE: 0.3809
+lgbm_only | aligned stacked OOF RMSLE: 0.3810
+lgbm_only | stack experimental weight share: 0.000, instability: 0.002
+lgbm_only | adversarial holdout RMSLE: 0.3821
+lgbm_catboost | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost | legacy stacked OOF RMSLE: 0.3797
+lgbm_catboost | aligned stacked OOF RMSLE: 0.3800
+lgbm_catboost | stack experimental weight share: 0.000, instability: 0.069
+lgbm_catboost | adversarial holdout RMSLE: 0.3818
+lgbm_xgb | LightGBM OOF RMSLE: 0.3807
+lgbm_xgb | XGBoost OOF RMSLE: 0.3833
+lgbm_xgb | legacy stacked OOF RMSLE: 0.3804
+lgbm_xgb | aligned stacked OOF RMSLE: 0.3804
+lgbm_xgb | stack experimental weight share: 0.000, instability: 0.054
+lgbm_xgb | adversarial holdout RMSLE: 0.3837
+lgbm_catboost_xgb | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb | legacy stacked OOF RMSLE: 0.3797
+lgbm_catboost_xgb | aligned stacked OOF RMSLE: 0.3800
+lgbm_catboost_xgb | stack experimental weight share: 0.000, instability: 0.108
+lgbm_catboost_xgb | adversarial holdout RMSLE: 0.3831
+lgbm_catboost_xgb_xgb_deep | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep | legacy stacked OOF RMSLE: 0.3798
+lgbm_catboost_xgb_xgb_deep | aligned stacked OOF RMSLE: 0.3799
+lgbm_catboost_xgb_xgb_deep | stack experimental weight share: 0.236, instability: 0.120
+lgbm_catboost_xgb_xgb_deep | adversarial holdout RMSLE: 0.3830
+lgbm_catboost_xgb_hightail | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_hightail | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_hightail | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_hightail | High-tail correction OOF RMSLE: 0.3847
+lgbm_catboost_xgb_hightail | legacy stacked OOF RMSLE: 0.3797
+lgbm_catboost_xgb_hightail | aligned stacked OOF RMSLE: 0.3800
+lgbm_catboost_xgb_hightail | stack experimental weight share: 0.182, instability: 0.176
+lgbm_catboost_xgb_hightail | adversarial holdout RMSLE: 0.3824
+lgbm_catboost_xgb_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_band_moe | legacy stacked OOF RMSLE: 0.3798
+lgbm_catboost_xgb_band_moe | aligned stacked OOF RMSLE: 0.3801
+lgbm_catboost_xgb_band_moe | stack experimental weight share: 0.469, instability: 0.133
+lgbm_catboost_xgb_band_moe | adversarial holdout RMSLE: 0.3841
+lgbm_catboost_xgb_xgb_deep_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_band_moe | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_xgb_deep_band_moe | legacy stacked OOF RMSLE: 0.3799
+lgbm_catboost_xgb_xgb_deep_band_moe | aligned stacked OOF RMSLE: 0.3800
+lgbm_catboost_xgb_xgb_deep_band_moe | stack experimental weight share: 0.542, instability: 0.174
+lgbm_catboost_xgb_xgb_deep_band_moe | adversarial holdout RMSLE: 0.3841
+lgbm_catboost_xgb_xgb_deep_rolling_direct | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_direct | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_direct | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_direct | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_direct | Rolling direct OOF RMSLE: 0.3832
+lgbm_catboost_xgb_xgb_deep_rolling_direct | legacy stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_direct | aligned stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_direct | stack experimental weight share: 0.608, instability: 0.153
+lgbm_catboost_xgb_xgb_deep_rolling_direct | adversarial holdout RMSLE: 0.3776
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | Rolling decomposition OOF RMSLE: 0.3891
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | legacy stacked OOF RMSLE: 0.3765
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | aligned stacked OOF RMSLE: 0.3765
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | stack experimental weight share: 0.585, instability: 0.145
+lgbm_catboost_xgb_xgb_deep_rolling_decomp | adversarial holdout RMSLE: 0.3791
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | Rolling high-tail >=200 OOF RMSLE: 0.3830
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | legacy stacked OOF RMSLE: 0.3748
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | aligned stacked OOF RMSLE: 0.3749
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | stack experimental weight share: 0.617, instability: 0.163
+lgbm_catboost_xgb_xgb_deep_rolling_tail200 | adversarial holdout RMSLE: 0.3761
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | Rolling high-tail >=500 OOF RMSLE: 0.3838
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | legacy stacked OOF RMSLE: 0.3754
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | aligned stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | stack experimental weight share: 0.598, instability: 0.160
+lgbm_catboost_xgb_xgb_deep_rolling_tail500 | adversarial holdout RMSLE: 0.3790
+lgbm_catboost_xgb_xgb_deep_rolling_all | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_all | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_all | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_all | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_all | Rolling direct OOF RMSLE: 0.3832
+lgbm_catboost_xgb_xgb_deep_rolling_all | Rolling decomposition OOF RMSLE: 0.3891
+lgbm_catboost_xgb_xgb_deep_rolling_all | Rolling high-tail >=200 OOF RMSLE: 0.3830
+lgbm_catboost_xgb_xgb_deep_rolling_all | Rolling high-tail >=500 OOF RMSLE: 0.3838
+lgbm_catboost_xgb_xgb_deep_rolling_all | legacy stacked OOF RMSLE: 0.3749
+lgbm_catboost_xgb_xgb_deep_rolling_all | aligned stacked OOF RMSLE: 0.3751
+lgbm_catboost_xgb_xgb_deep_rolling_all | stack experimental weight share: 0.679, instability: 0.393
+lgbm_catboost_xgb_xgb_deep_rolling_all | adversarial holdout RMSLE: 0.3769
+lgbm_catboost_xgb_rolling_direct_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_rolling_direct_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_rolling_direct_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_rolling_direct_band_moe | Rolling direct OOF RMSLE: 0.3832
+lgbm_catboost_xgb_rolling_direct_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_rolling_direct_band_moe | legacy stacked OOF RMSLE: 0.3758
+lgbm_catboost_xgb_rolling_direct_band_moe | aligned stacked OOF RMSLE: 0.3761
+lgbm_catboost_xgb_rolling_direct_band_moe | stack experimental weight share: 0.605, instability: 0.137
+lgbm_catboost_xgb_rolling_direct_band_moe | adversarial holdout RMSLE: 0.3791
+lgbm_catboost_xgb_rolling_decomp_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_rolling_decomp_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_rolling_decomp_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_rolling_decomp_band_moe | Rolling decomposition OOF RMSLE: 0.3891
+lgbm_catboost_xgb_rolling_decomp_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_rolling_decomp_band_moe | legacy stacked OOF RMSLE: 0.3769
+lgbm_catboost_xgb_rolling_decomp_band_moe | aligned stacked OOF RMSLE: 0.3771
+lgbm_catboost_xgb_rolling_decomp_band_moe | stack experimental weight share: 0.609, instability: 0.147
+lgbm_catboost_xgb_rolling_decomp_band_moe | adversarial holdout RMSLE: 0.3805
+lgbm_catboost_xgb_rolling_tail200_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_rolling_tail200_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_rolling_tail200_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_rolling_tail200_band_moe | Rolling high-tail >=200 OOF RMSLE: 0.3830
+lgbm_catboost_xgb_rolling_tail200_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_rolling_tail200_band_moe | legacy stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_rolling_tail200_band_moe | aligned stacked OOF RMSLE: 0.3756
+lgbm_catboost_xgb_rolling_tail200_band_moe | stack experimental weight share: 0.608, instability: 0.143
+lgbm_catboost_xgb_rolling_tail200_band_moe | adversarial holdout RMSLE: 0.3777
+lgbm_catboost_xgb_rolling_tail500_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_rolling_tail500_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_rolling_tail500_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_rolling_tail500_band_moe | Rolling high-tail >=500 OOF RMSLE: 0.3838
+lgbm_catboost_xgb_rolling_tail500_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_rolling_tail500_band_moe | legacy stacked OOF RMSLE: 0.3759
+lgbm_catboost_xgb_rolling_tail500_band_moe | aligned stacked OOF RMSLE: 0.3760
+lgbm_catboost_xgb_rolling_tail500_band_moe | stack experimental weight share: 0.598, instability: 0.140
+lgbm_catboost_xgb_rolling_tail500_band_moe | adversarial holdout RMSLE: 0.3802
+lgbm_catboost_xgb_rolling_all_band_moe | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_rolling_all_band_moe | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_rolling_all_band_moe | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_rolling_all_band_moe | Rolling direct OOF RMSLE: 0.3832
+lgbm_catboost_xgb_rolling_all_band_moe | Rolling decomposition OOF RMSLE: 0.3891
+lgbm_catboost_xgb_rolling_all_band_moe | Rolling high-tail >=200 OOF RMSLE: 0.3830
+lgbm_catboost_xgb_rolling_all_band_moe | Rolling high-tail >=500 OOF RMSLE: 0.3838
+lgbm_catboost_xgb_rolling_all_band_moe | Banded mixture of experts OOF RMSLE: 0.3836
+lgbm_catboost_xgb_rolling_all_band_moe | legacy stacked OOF RMSLE: 0.3755
+lgbm_catboost_xgb_rolling_all_band_moe | aligned stacked OOF RMSLE: 0.3758
+lgbm_catboost_xgb_rolling_all_band_moe | stack experimental weight share: 0.656, instability: 0.372
+lgbm_catboost_xgb_rolling_all_band_moe | adversarial holdout RMSLE: 0.3784
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | Rolling direct OOF RMSLE: 0.3832
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | High-tail correction OOF RMSLE: 0.3847
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | legacy stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | aligned stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | stack experimental weight share: 0.693, instability: 0.212
+lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail | adversarial holdout RMSLE: 0.3771
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | Rolling decomposition OOF RMSLE: 0.3891
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | High-tail correction OOF RMSLE: 0.3847
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | legacy stacked OOF RMSLE: 0.3764
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | aligned stacked OOF RMSLE: 0.3765
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | stack experimental weight share: 0.687, instability: 0.227
+lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail | adversarial holdout RMSLE: 0.3785
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | Rolling high-tail >=200 OOF RMSLE: 0.3830
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | High-tail correction OOF RMSLE: 0.3847
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | legacy stacked OOF RMSLE: 0.3749
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | aligned stacked OOF RMSLE: 0.3750
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | stack experimental weight share: 0.627, instability: 0.195
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail | adversarial holdout RMSLE: 0.3763
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | Rolling high-tail >=500 OOF RMSLE: 0.3838
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | High-tail correction OOF RMSLE: 0.3847
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | legacy stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | aligned stacked OOF RMSLE: 0.3753
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | stack experimental weight share: 0.690, instability: 0.209
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail | adversarial holdout RMSLE: 0.3782
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | LightGBM OOF RMSLE: 0.3807
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | CatBoost OOF RMSLE: 0.3865
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | XGBoost OOF RMSLE: 0.3833
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | Deep XGBoost OOF RMSLE: 0.3825
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | Rolling direct OOF RMSLE: 0.3832
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | Rolling decomposition OOF RMSLE: 0.3891
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | Rolling high-tail >=200 OOF RMSLE: 0.3830
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | Rolling high-tail >=500 OOF RMSLE: 0.3838
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | High-tail correction OOF RMSLE: 0.3847
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | legacy stacked OOF RMSLE: 0.3750
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | aligned stacked OOF RMSLE: 0.3751
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | stack experimental weight share: 0.704, instability: 0.417
+lgbm_catboost_xgb_xgb_deep_rolling_all_hightail | adversarial holdout RMSLE: 0.3768
+Stack weight stability report saved to data/processed/stack_weight_stability_report.csv
+Validation reward report saved to data/processed/validation_reward_report.csv (eligible points=0).
+Public alignment calibration report saved to data/processed/public_alignment_report.csv
+Candidate validation report saved to data/processed/stack_candidate_validation.csv
+Shared validation report saved to data/processed/validation_report.csv
+Candidate residual bands saved to data/processed/stack_candidate_residual_bands.csv
+Experimental stacks are locked. Defaulting final submission to lgbm_catboost_xgb. Set ALLOW_EXPERIMENTAL_STACK=1 to let guarded experimental candidates overwrite submission_stacked.csv.
+
+Stacking ablation scores:
+                                           scenario                                                                                            models    rmsle  legacy_oof_rmsle  adversarial_train_test_auc  adversarial_holdout_rmsle  adversarial_holdout_rows  stack_weight_abs_sum  stack_coef_instability  stack_max_abs_weight  stack_rolling_weight_share  stack_experimental_weight_share  stack_negative_weight_count stack_dominant_feature validation_strategy  validation_repeats  includes_pytorch  includes_hightail  includes_rolling  includes_seedbag  includes_event_temporal  includes_experimental  selected
+         lgbm_catboost_xgb_xgb_deep_rolling_tail200                                                        lgbm,catboost,xgb,xgb_deep,rolling_tail200 0.374905          0.374812                    0.506259                   0.376099                      1674              1.111042                0.162614              0.490417                    0.440954                         0.616921                            1   pred_rolling_tail200 stratified_activity                   1             False              False              True             False                    False                   True     False
+lgbm_catboost_xgb_xgb_deep_rolling_tail200_hightail                                               lgbm,catboost,xgb,xgb_deep,rolling_tail200,hightail 0.374999          0.374932                    0.506259                   0.376320                      1674              1.147835                0.194645              0.491723                    0.420223                         0.626694                            2   pred_rolling_tail200 stratified_activity                   1             False               True              True             False                    False                   True     False
+             lgbm_catboost_xgb_xgb_deep_rolling_all          lgbm,catboost,xgb,xgb_deep,rolling_direct,rolling_decomp,rolling_tail200,rolling_tail500 0.375064          0.374927                    0.506259                   0.376936                      1674              1.313003                0.393329              0.387846                    0.528820                         0.679020                            2   pred_rolling_tail200 stratified_activity                   1             False              False              True             False                    False                   True     False
+    lgbm_catboost_xgb_xgb_deep_rolling_all_hightail lgbm,catboost,xgb,xgb_deep,rolling_direct,rolling_decomp,rolling_tail200,rolling_tail500,hightail 0.375115          0.375014                    0.506259                   0.376760                      1674              1.329568                0.417145              0.362305                    0.532584                         0.703657                            2   pred_rolling_tail200 stratified_activity                   1             False               True              True             False                    False                   True     False
+lgbm_catboost_xgb_xgb_deep_rolling_tail500_hightail                                               lgbm,catboost,xgb,xgb_deep,rolling_tail500,hightail 0.375251          0.375302                    0.506259                   0.378214                      1674              1.142920                0.209166              0.465179                    0.409170                         0.690112                            1   pred_rolling_tail500 stratified_activity                   1             False               True              True             False                    False                   True     False
+         lgbm_catboost_xgb_xgb_deep_rolling_tail500                                                        lgbm,catboost,xgb,xgb_deep,rolling_tail500 0.375293          0.375372                    0.506259                   0.379010                      1674              1.109472                0.160499              0.465742                    0.421023                         0.597640                            1   pred_rolling_tail500 stratified_activity                   1             False              False              True             False                    False                   True     False
+ lgbm_catboost_xgb_xgb_deep_rolling_direct_hightail                                                lgbm,catboost,xgb,xgb_deep,rolling_direct,hightail 0.375301          0.375262                    0.506259                   0.377068                      1674              1.154933                0.212111              0.490362                    0.426835                         0.693124                            1    pred_rolling_direct stratified_activity                   1             False               True              True             False                    False                   True     False
+          lgbm_catboost_xgb_xgb_deep_rolling_direct                                                         lgbm,catboost,xgb,xgb_deep,rolling_direct 0.375319          0.375345                    0.506259                   0.377640                      1674              1.124056                0.152505              0.492605                    0.440594                         0.607935                            1    pred_rolling_direct stratified_activity                   1             False              False              True             False                    False                   True     False
+         lgbm_catboost_xgb_rolling_tail200_band_moe                                                        lgbm,catboost,xgb,rolling_tail200,band_moe 0.375637          0.375298                    0.506259                   0.377678                      1674              1.174981                0.143038              0.433362                    0.371568                         0.607576                            1   pred_rolling_tail200 stratified_activity                   1             False              False              True             False                    False                   True     False
+             lgbm_catboost_xgb_rolling_all_band_moe          lgbm,catboost,xgb,rolling_direct,rolling_decomp,rolling_tail200,rolling_tail500,band_moe 0.375820          0.375505                    0.506259                   0.378353                      1674              1.339098                0.372274              0.352346                    0.462691                         0.655890                            2   pred_rolling_tail200 stratified_activity                   1             False              False              True             False                    False                   True     False
+         lgbm_catboost_xgb_rolling_tail500_band_moe                                                        lgbm,catboost,xgb,rolling_tail500,band_moe 0.376041          0.375853                    0.506259                   0.380167                      1674              1.174897                0.140225              0.406163                    0.348318                         0.598211                            1   pred_rolling_tail500 stratified_activity                   1             False              False              True             False                    False                   True     False
+          lgbm_catboost_xgb_rolling_direct_band_moe                                                         lgbm,catboost,xgb,rolling_direct,band_moe 0.376070          0.375820                    0.506259                   0.379055                      1674              1.191656                0.137402              0.432892                    0.366014                         0.605404                            1    pred_rolling_direct stratified_activity                   1             False              False              True             False                    False                   True     False
+          lgbm_catboost_xgb_xgb_deep_rolling_decomp                                                         lgbm,catboost,xgb,xgb_deep,rolling_decomp 0.376475          0.376536                    0.506259                   0.379118                      1674              1.039372                0.145172              0.428113                    0.404083                         0.585046                            1    pred_rolling_decomp stratified_activity                   1             False              False              True             False                    False                   True     False
+ lgbm_catboost_xgb_xgb_deep_rolling_decomp_hightail                                                lgbm,catboost,xgb,xgb_deep,rolling_decomp,hightail 0.376477          0.376442                    0.506259                   0.378470                      1674              1.066626                0.227397              0.426087                    0.395706                         0.686949                            1    pred_rolling_decomp stratified_activity                   1             False               True              True             False                    False                   True     False
+          lgbm_catboost_xgb_rolling_decomp_band_moe                                                         lgbm,catboost,xgb,rolling_decomp,band_moe 0.377124          0.376906                    0.506259                   0.380500                      1674              1.114860                0.147121              0.367636                    0.329830                         0.608842                            1    pred_rolling_decomp stratified_activity                   1             False              False              True             False                    False                   True     False
+                         lgbm_catboost_xgb_xgb_deep                                                                        lgbm,catboost,xgb,xgb_deep 0.379912          0.379762                    0.506259                   0.382965                      1674              1.012724                0.119858              0.344536                    0.000000                         0.235891                            0              pred_lgbm stratified_activity                   1             False              False             False             False                    False                   True     False
+                         lgbm_catboost_xgb_hightail                                                                        lgbm,catboost,xgb,hightail 0.379950          0.379701                    0.506259                   0.382407                      1674              1.011916                0.175714              0.353459                    0.000000                         0.182476                            0              pred_lgbm stratified_activity                   1             False               True             False             False                    False                   True     False
+                                  lgbm_catboost_xgb                                                                                 lgbm,catboost,xgb 0.379973          0.379737                    0.506259                   0.383131                      1674              1.012787                0.107742              0.415756                    0.000000                         0.000000                            0               pred_xgb stratified_activity                   1             False              False             False             False                    False                  False      True
+                                      lgbm_catboost                                                                                     lgbm,catboost 0.379975          0.379726                    0.506259                   0.381791                      1674              1.013168                0.068970              0.689598                    0.000000                         0.000000                            0              pred_lgbm stratified_activity                   1             False              False             False             False                    False                  False     False
+                lgbm_catboost_xgb_xgb_deep_band_moe                                                               lgbm,catboost,xgb,xgb_deep,band_moe 0.380041          0.379860                    0.506259                   0.384056                      1674              1.013882                0.174385              0.468741                    0.000000                         0.541898                            0          pred_band_moe stratified_activity                   1             False              False             False             False                    False                   True     False
+                         lgbm_catboost_xgb_band_moe                                                                        lgbm,catboost,xgb,band_moe 0.380062          0.379753                    0.506259                   0.384094                      1674              1.013883                0.133361              0.475302                    0.000000                         0.468751                            0          pred_band_moe stratified_activity                   1             False              False             False             False                    False                   True     False
+                                           lgbm_xgb                                                                                          lgbm,xgb 0.380432          0.380370                    0.506259                   0.383694                      1674              1.012745                0.054076              0.529663                    0.000000                         0.000000                            0               pred_xgb stratified_activity                   1             False              False             False             False                    False                  False     False
+                                          lgbm_only                                                                                              lgbm 0.380954          0.380867                    0.506259                   0.382120                      1674              1.013383                0.001913              1.013383                    0.000000                         0.000000                            0              pred_lgbm stratified_activity                   1             False              False             False             False                    False                  False     False
+
+Selected stack: lgbm_catboost_xgb (0.3800 RMSLE)
+Selected stack OOF predictions saved to data/processed/oof_stack_lgbm_catboost_xgb.csv
+Selected stack residual band report saved to data/processed/stack_selected_residual_bands.csv
+Final stack weights:
+  pred_lgbm: 0.3886
+  pred_catboost: 0.2070
+  pred_xgb: 0.4171
+  intercept: -0.0577
+Saved log-space test predictions to data/processed/test_pred_stacked.csv
+Saved log-space Zindi submission to submission_stacked_no_pytorch.csv
+Submission manifest updated at data/processed/submission_manifest.csv
+Recorded submission artifact without a public score.
+Public submission registry updated at data/processed/submission_public_registry.csv
+Also wrote selected stack to submission_stacked.csv
+
+--- PHASE 4: Validation, Interval, Anomaly & Drift Diagnostics ---
+
+==================================================
+Running src/diagnostics.py...
+==================================================
+Residual calibration report saved to data/processed/residual_calibration_report.csv
+OOF prediction interval diagnostics saved to data/processed/prediction_intervals_oof.csv
+Residual anomaly diagnostic scores saved to data/processed/anomaly_scores_train.csv
+Train/test drift report saved to data/processed/drift_report.csv
+
+Pipeline completed! The selected stack submission is saved as 'submission_stacked.csv'.
